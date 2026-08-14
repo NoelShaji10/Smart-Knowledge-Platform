@@ -1,0 +1,24 @@
+{
+  "name": "collab-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@knowledge/config": "workspace:*",
+    "@knowledge/database": "workspace:*",
+    "@knowledge/jobs": "workspace:*",
+    "@knowledge/redis": "workspace:*",
+    "@knowledge/storage": "workspace:*",
+    "@knowledge/types": "workspace:*",
+    "ws": "^8.16.0",
+    "yjs": "^13.6.14"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  }
+}

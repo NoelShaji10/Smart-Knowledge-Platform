@@ -1,0 +1,23 @@
+{
+  "name": "knowledge-platform",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run",
+    "test:security": "vitest run --config vitest.config.ts tests/security",
+    "db:migrate": "pnpm --filter @knowledge/database migrate",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "turbo": "^1.13.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

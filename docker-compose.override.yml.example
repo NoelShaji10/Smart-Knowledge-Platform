@@ -1,0 +1,5 @@
+# Local override example for host mapping (e.g. for Ollama)
+services:
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

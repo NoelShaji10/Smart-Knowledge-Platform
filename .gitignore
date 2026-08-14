@@ -1,9 +1,38 @@
-node_modules
-.next
-dist
-build
-.turbo
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Environment / secrets
 .env
 .env.local
+.env.*.local
+.env.test
+!.env.example
+
+# Build outputs
+.next/
+dist/
+build/
+out/
+coverage/
+.turbo/
+
+# Logs
 *.log
-coverage
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local Docker / data
+*.pid
+*.pid.lock
+
+# Temporary files
+*.tmp
+*.temp

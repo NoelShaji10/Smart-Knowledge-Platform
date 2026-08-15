@@ -1,9 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import { getPgPool } from './client';
+import { getMigrationPgPool } from './client';
 
 export async function runMigrations(): Promise<void> {
-  const pool = getPgPool();
+  const pool = getMigrationPgPool();
   const migrationsDir = path.join(__dirname, '../migrations');
   const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
 

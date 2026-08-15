@@ -16,8 +16,19 @@ export interface UsersTable {
   avatar_url: string | null;
   auth_provider: string;
   auth_subject: string;
+  password_hash: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+}
+
+export interface RefreshTokensTable {
+  id: Generated<string>;
+  user_id: string;
+  family_id: string;
+  token_hash: string;
+  expires_at: Date;
+  created_at: Generated<Date>;
+  revoked_at: Date | null;
 }
 
 export interface WorkspaceMembersTable {
@@ -90,7 +101,7 @@ export interface CommentsTable {
 
 export interface AuditEventsTable {
   id: Generated<string>;
-  workspace_id: string;
+  workspace_id: string | null;
   actor_id: string | null;
   action: string;
   resource_type: string;
@@ -104,6 +115,7 @@ export interface AuditEventsTable {
 export interface Database {
   workspaces: WorkspacesTable;
   users: UsersTable;
+  refresh_tokens: RefreshTokensTable;
   workspace_members: WorkspaceMembersTable;
   documents: DocumentsTable;
   document_permissions: DocumentPermissionsTable;
@@ -112,3 +124,4 @@ export interface Database {
   comments: CommentsTable;
   audit_events: AuditEventsTable;
 }
+

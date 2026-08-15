@@ -1,18 +1,20 @@
 import { Request, Response, NextFunction } from 'express';
-import { withUserContext, getDb } from '@knowledge/database';
+import { createScopedDb, ScopedDb } from '@knowledge/database';
 
-export async function rlsMiddleware(req: Request, res: Response, next: NextFunction) {
+declare global {
+  namespace Express {
+    interface Request {
+      db?: ScopedDb;
+    }
+  }
+}
+
+export function rlsMiddleware(req: Request, _res: Response, next: NextFunction) {
   if (!req.user) {
     next();
     return;
   }
 
-  // Inject app.current_user_id for downstream transactional execution
-  try {
-    await withUserContext(req.user.userId, async () => {
-      next();
-    });
-  } catch (err) {
-    next(err);
-  }
+  req.db = createScopedDb(req.user.userId);
+  next();
 }

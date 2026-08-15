@@ -12,9 +12,14 @@
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.11.30",
+    "@types/supertest": "^6.0.2",
+    "argon2": "^0.40.1",
     "eslint": "^8.57.0",
+    "jsonwebtoken": "^9.0.2",
     "prettier": "^3.2.5",
+    "supertest": "^6.3.4",
     "turbo": "^1.13.0",
     "typescript": "^5.4.0",
     "vitest": "^1.4.0"

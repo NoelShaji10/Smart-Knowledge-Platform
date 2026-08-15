@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { getEnv } from '@knowledge/config';
+import { verifyAccessToken } from '@knowledge/auth';
 
 export interface AuthenticatedUser {
   userId: string;
@@ -25,12 +24,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 
   const token = authHeader.substring(7);
   try {
-    const env = getEnv();
-    const payload = jwt.verify(token, env.JWT_SECRET) as any;
+    const payload = verifyAccessToken(token);
     req.user = {
-      userId: payload.sub,
-      email: payload.email,
-      workspaces: payload.workspaces || [],
+      userId: payload.sub as string,
+      email: payload.email as string,
+      workspaces: (payload.workspaces as Array<{ id: string; role: string }>) || [],
     };
     next();
   } catch {

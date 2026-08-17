@@ -14,14 +14,18 @@ describe('Security Requirement 6: Route Boundary Enforcer', () => {
       const filePath = path.join(routesDir, file);
       const content = fs.readFileSync(filePath, 'utf8');
 
-      if (content.includes('getSystemDb')) {
+      if (
+        content.includes('getSystemDb') ||
+        content.includes('getMigrationPgPool') ||
+        content.includes('withSystemContext')
+      ) {
         violations.push(file);
       }
     }
 
     expect(
       violations,
-      `Direct getSystemDb import violation in API route handlers: ${violations.join(', ')}. Normal API routes must use req.db for request-scoped operations.`,
+      `Forbidden unscoped database call (getSystemDb, getMigrationPgPool, withSystemContext) in API route handlers: ${violations.join(', ')}. Normal API routes must use req.db for request-scoped operations under RLS.`,
     ).toEqual([]);
   });
 });

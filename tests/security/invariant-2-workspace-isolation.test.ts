@@ -69,4 +69,36 @@ describe('Security Invariant 2: Complete Workspace Isolation', () => {
     const hasWorkspaceB = workspacesA.some((w) => w.id === workspaceB_id);
     expect(hasWorkspaceB).toBe(false);
   });
+
+  it('enforces PostgreSQL RLS preventing direct DB access to documents across workspaces', async () => {
+    if (!isDbConnected) return;
+
+    // Create document in Workspace B as User B
+    const scopedDbB = createScopedDb(userB_id);
+    const docB = await scopedDbB.execute(async (db) => {
+      return db
+        .insertInto('documents')
+        .values({
+          workspace_id: workspaceB_id,
+          title: 'Workspace B Secret Doc',
+          content_text: 'Secret content',
+          created_by: userB_id,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+
+    // Query documents as User A under ScopedDb
+    const scopedDbA = createScopedDb(userA_id);
+    const docsForUserA = await scopedDbA.execute(async (db) => {
+      return db
+        .selectFrom('documents')
+        .where('id', '=', docB.id)
+        .selectAll()
+        .execute();
+    });
+
+    // PostgreSQL RLS MUST return 0 rows for docB under User A's context
+    expect(docsForUserA.length).toBe(0);
+  });
 });

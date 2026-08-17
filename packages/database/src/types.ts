@@ -41,6 +41,8 @@ export interface WorkspaceMembersTable {
 export interface DocumentsTable {
   id: Generated<string>;
   workspace_id: string;
+  parent_id: string | null;
+  is_archived: Generated<boolean>;
   title: string;
   content_text: string;
   content_tsv: Generated<unknown>;
@@ -63,11 +65,11 @@ export interface DocumentVersionsTable {
   id: Generated<string>;
   document_id: string;
   version_number: number;
-  snapshot_key: string;
+  snapshot_key: string | null;
   content_text: string | null;
   title: string | null;
   created_by: string | null;
-  trigger: 'manual' | 'auto_interval' | 'session_end';
+  trigger: 'manual' | 'auto_interval' | 'session_end' | 'restore';
   created_at: Generated<Date>;
 }
 

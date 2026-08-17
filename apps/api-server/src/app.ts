@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { workspaceRouter } from './routes/workspaces';
+import { documentRouter } from './routes/documents';
 import { wsTicketRouter } from './routes/ws-ticket';
 import { errorHandler } from './middleware/error-handler';
 
@@ -17,6 +18,7 @@ export function createApiApp(): Express {
   app.use(healthRouter);
   app.use(authRouter);
   app.use(workspaceRouter);
+  app.use(documentRouter);
   app.use(wsTicketRouter);
 
   app.use(errorHandler);

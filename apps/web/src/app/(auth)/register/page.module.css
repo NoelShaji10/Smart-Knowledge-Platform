@@ -1,0 +1,50 @@
+.heading {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: var(--space-1);
+}
+
+.subtext {
+  font-size: var(--text-base);
+  color: var(--fg-secondary);
+  margin-bottom: var(--space-6);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.errorMessage {
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background-color: var(--danger-subtle);
+  padding: var(--space-3);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.passwordRequirement {
+  font-size: var(--text-sm);
+  color: var(--fg-secondary);
+  margin-top: -var(--space-2);
+}
+
+.met {
+  color: var(--success);
+}
+
+.footerText {
+  margin-top: var(--space-6);
+  font-size: var(--text-sm);
+  color: var(--fg-secondary);
+  text-align: center;
+}
+
+.footerLink {
+  color: var(--accent);
+  font-weight: 500;
+}

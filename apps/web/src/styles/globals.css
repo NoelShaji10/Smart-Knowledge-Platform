@@ -1,0 +1,158 @@
+:root {
+  /* Color Palette (OKLch) */
+  --bg: oklch(0.99 0.002 260);
+  --surface: oklch(0.97 0.003 260);
+  --surface-alt: oklch(0.95 0.004 260);
+  --border: oklch(0.91 0.005 260);
+  --border-strong: oklch(0.85 0.006 260);
+
+  --fg: oklch(0.18 0.01 260);
+  --fg-secondary: oklch(0.42 0.01 260);
+  --fg-tertiary: oklch(0.58 0.008 260);
+
+  --accent: oklch(0.55 0.17 255);
+  --accent-hover: oklch(0.50 0.17 255);
+  --accent-subtle: oklch(0.95 0.04 255);
+
+  --danger: oklch(0.55 0.2 25);
+  --danger-subtle: oklch(0.95 0.04 25);
+  --success: oklch(0.55 0.18 145);
+  --success-subtle: oklch(0.95 0.04 145);
+  --warning: oklch(0.7 0.16 75);
+  --warning-subtle: oklch(0.96 0.04 75);
+
+  /* Fonts */
+  --font-display: 'Charter', 'Bitstream Charter', 'Sitka Text', Cambria, serif;
+  --font-body: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
+  --font-mono: var(--font-jetbrains, 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace);
+
+  /* Type Scale */
+  --text-xs: 0.75rem;     /* 12px */
+  --text-sm: 0.8125rem;   /* 13px */
+  --text-base: 0.9375rem; /* 15px base */
+  --text-lg: 1.125rem;    /* 18px */
+  --text-xl: 1.375rem;    /* 22px */
+  --text-2xl: 1.75rem;    /* 28px */
+  --text-3xl: 2.25rem;    /* 36px */
+
+  /* Spacing Scale (8px grid) */
+  --space-1: 0.25rem;  /* 4px */
+  --space-2: 0.5rem;   /* 8px */
+  --space-3: 0.75rem;  /* 12px */
+  --space-4: 1rem;     /* 16px */
+  --space-5: 1.25rem;  /* 20px */
+  --space-6: 1.5rem;   /* 24px */
+  --space-8: 2rem;     /* 32px */
+  --space-10: 2.5rem;  /* 40px */
+  --space-12: 3rem;    /* 48px */
+  --space-16: 4rem;    /* 64px */
+
+  /* Layout Dimensions */
+  --topbar-height: 52px;
+  --sidebar-width: 240px;
+}
+
+[data-theme="dark"] {
+  --bg: oklch(0.18 0.01 260);
+  --surface: oklch(0.22 0.01 260);
+  --surface-alt: oklch(0.26 0.01 260);
+  --border: oklch(0.30 0.01 260);
+  --border-strong: oklch(0.40 0.01 260);
+
+  --fg: oklch(0.95 0.004 260);
+  --fg-secondary: oklch(0.75 0.006 260);
+  --fg-tertiary: oklch(0.58 0.008 260);
+
+  --accent: oklch(0.65 0.17 255);
+  --accent-hover: oklch(0.70 0.17 255);
+  --accent-subtle: oklch(0.25 0.05 255);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Accessibility Skip Link */
+.kp-skip-link {
+  position: absolute;
+  top: -9999px;
+  left: var(--space-4);
+  z-index: 100;
+  padding: var(--space-2) var(--space-4);
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.kp-skip-link:focus {
+  top: var(--space-2);
+}
+
+/* Base Component Utilities */
+.kp-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  border-radius: 50%;
+  animation: kp-spin 0.6s linear infinite;
+}
+
+.kp-spinner--lg {
+  width: 24px;
+  height: 24px;
+  border-width: 3px;
+  color: var(--accent);
+}
+
+@keyframes kp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduced Motion Override */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,14 +1,31 @@
 import React from 'react';
+import type { Metadata } from 'next';
+import { Inter, JetBrains_Mono } from 'next/font/google';
+import { AuthProvider } from '@/contexts/AuthContext';
+import { WorkspaceProvider } from '@/contexts/WorkspaceContext';
+import '@/styles/globals.css';
 
-export const metadata = {
-  title: 'AI Knowledge Platform',
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains' });
+
+export const metadata: Metadata = {
+  title: 'Knowledge Platform',
   description: 'AI-Powered Real-Time Collaboration & Knowledge Platform',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body>
+        <a href="#main-content" className="kp-skip-link">
+          Skip to main content
+        </a>
+        <AuthProvider>
+          <WorkspaceProvider>
+            {children}
+          </WorkspaceProvider>
+        </AuthProvider>
+      </body>
     </html>
   );
 }

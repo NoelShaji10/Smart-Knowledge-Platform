@@ -194,6 +194,46 @@ export async function apiRequest<T>(
   return response.json() as Promise<T>;
 }
 
+export interface Document {
+  id: string;
+  workspace_id: string;
+  parent_id: string | null;
+  title: string;
+  content_text: string;
+  snapshot_key?: string | null;
+  snapshot_version?: number;
+  is_archived?: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentCapabilities {
+  canRead: boolean;
+  canEdit: boolean;
+  canMove: boolean;
+  canArchive: boolean;
+  canManagePermissions: boolean;
+}
+
+export interface DocumentResponse {
+  document: Document;
+  effectiveRole: 'editor' | 'viewer' | 'none';
+  capabilities: DocumentCapabilities;
+}
+
+export interface DocumentVersion {
+  id: string;
+  document_id: string;
+  version_number: number;
+  snapshot_key: string;
+  content_text: string;
+  title: string;
+  created_by: string | null;
+  trigger: 'manual' | 'auto_interval' | 'session_end' | 'restore';
+  created_at: string;
+}
+
 export const api = {
   login: (data: { email: string; password: string }) =>
     apiRequest<AuthResponse>('/api/v1/auth/login', {
@@ -235,4 +275,73 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+
+  listDocuments: (workspaceId: string, params?: { parentId?: string | null; includeArchived?: boolean }) => {
+    const query = new URLSearchParams();
+    if (params?.parentId !== undefined) {
+      query.set('parentId', params.parentId === null ? 'null' : params.parentId);
+    }
+    if (params?.includeArchived) {
+      query.set('includeArchived', 'true');
+    }
+    const queryString = query.toString() ? `?${query.toString()}` : '';
+    return apiRequest<{ documents: Document[] }>(`/api/v1/workspaces/${workspaceId}/documents${queryString}`, {
+      method: 'GET',
+    });
+  },
+
+  createDocument: (workspaceId: string, data: { title?: string; parentId?: string | null; contentText?: string }) =>
+    apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getDocument: (workspaceId: string, documentId: string) =>
+    apiRequest<DocumentResponse>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}`, {
+      method: 'GET',
+    }),
+
+  updateDocument: (workspaceId: string, documentId: string, data: { title?: string; contentText?: string }) =>
+    apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  moveDocument: (workspaceId: string, documentId: string, parentId: string | null) =>
+    apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ parentId }),
+    }),
+
+  archiveDocument: (workspaceId: string, documentId: string) =>
+    apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/archive`, {
+      method: 'POST',
+    }),
+
+  restoreDocument: (workspaceId: string, documentId: string) =>
+    apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/restore`, {
+      method: 'POST',
+    }),
+
+  listVersions: (workspaceId: string, documentId: string) =>
+    apiRequest<{ versions: DocumentVersion[] }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions`, {
+      method: 'GET',
+    }),
+
+  getVersion: (workspaceId: string, documentId: string, versionNumber: number) =>
+    apiRequest<{ version: DocumentVersion }>(
+      `/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions/${versionNumber}`,
+      { method: 'GET' },
+    ),
+
+  createVersion: (workspaceId: string, documentId: string) =>
+    apiRequest<{ version: DocumentVersion }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions`, {
+      method: 'POST',
+    }),
+
+  restoreVersion: (workspaceId: string, documentId: string, versionNumber: number) =>
+    apiRequest<{ document: Document; newVersion: DocumentVersion }>(
+      `/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions/${versionNumber}/restore`,
+      { method: 'POST' },
+    ),
 };

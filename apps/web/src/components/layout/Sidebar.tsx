@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { Avatar, Badge } from '@/components/ui';
+import { DocumentTree } from '@/components/documents/DocumentTree';
 import styles from './Sidebar.module.css';
 
 export function Sidebar() {
@@ -41,22 +42,7 @@ export function Sidebar() {
       </nav>
 
       <div className={styles.docSection}>
-        <div className={styles.sectionHeader}>Documents</div>
-        <div className={styles.emptyDocText}>No documents yet.</div>
-
-        <button
-          type="button"
-          className={styles.newDocBtn}
-          disabled
-          aria-disabled="true"
-          title="Document creation will be enabled in Task T8"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          <span>+ New Document</span>
-        </button>
+        <DocumentTree />
       </div>
 
       <div className={styles.userFooter}>

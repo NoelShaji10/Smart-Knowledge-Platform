@@ -1,0 +1,109 @@
+.editorWrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: var(--space-6);
+  box-sizing: border-box;
+}
+
+.titleInput {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1.2;
+  margin-bottom: var(--space-4);
+  outline: none;
+}
+
+.titleInput::placeholder {
+  color: var(--fg-tertiary);
+}
+
+.titleInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.editorArea {
+  min-height: 400px;
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+
+.editorArea :global(.ProseMirror) {
+  outline: none;
+  min-height: 350px;
+}
+
+.editorArea :global(.ProseMirror p) {
+  margin-bottom: 1em;
+}
+
+.editorArea :global(.ProseMirror h1) {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.editorArea :global(.ProseMirror h2) {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+}
+
+.editorArea :global(.ProseMirror h3) {
+  font-size: var(--text-lg);
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+.editorArea :global(.ProseMirror ul),
+.editorArea :global(.ProseMirror ol) {
+  padding-left: 1.5em;
+  margin-bottom: 1em;
+}
+
+.editorArea :global(.ProseMirror blockquote) {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 1em;
+  color: var(--fg-secondary);
+  font-style: italic;
+  margin-bottom: 1em;
+}
+
+.editorArea :global(.ProseMirror pre) {
+  background-color: var(--surface-alt);
+  padding: 1em;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-x: auto;
+  margin-bottom: 1em;
+}
+
+.editorArea :global(.ProseMirror code) {
+  background-color: var(--surface-alt);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.editorArea :global(.ProseMirror p.is-editor-empty:first-child::before) {
+  color: var(--fg-tertiary);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}

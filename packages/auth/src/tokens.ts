@@ -56,15 +56,17 @@ export async function issueRefreshToken(
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + env.JWT_REFRESH_EXPIRY_DAYS);
 
-  await db
-    .insertInto('refresh_tokens')
-    .values({
-      user_id: userId,
-      family_id: familyId,
-      token_hash: tokenHash,
-      expires_at: expiresAt,
-    })
-    .execute();
+  await withSystemContext(async (sysDb) => {
+    await sysDb
+      .insertInto('refresh_tokens')
+      .values({
+        user_id: userId,
+        family_id: familyId,
+        token_hash: tokenHash,
+        expires_at: expiresAt,
+      })
+      .execute();
+  });
 
   return { rawToken, familyId, expiresAt };
 }
@@ -76,73 +78,93 @@ export async function rotateRefreshToken(
   const tokenToUse = typeof dbOrToken === 'string' ? dbOrToken : oldRawToken!;
   const oldHash = hashToken(tokenToUse);
 
-  return withSystemContext(async (systemDb) => {
-    return systemDb.transaction().execute(async (trx: Kysely<Database>) => {
-      // 1. SELECT ... FOR UPDATE to lock the token row
-      const tokenRow = await trx
-        .selectFrom('refresh_tokens')
-        .where('token_hash', '=', oldHash)
-        .selectAll()
-        .forUpdate()
-        .executeTakeFirst();
+  const res = await withSystemContext(async (systemDb) => {
+    // 1. SELECT ... FOR UPDATE to lock the token row
+    const tokenRow = await systemDb
+      .selectFrom('refresh_tokens')
+      .where('token_hash', '=', oldHash)
+      .selectAll()
+      .forUpdate()
+      .executeTakeFirst();
 
-      if (!tokenRow) {
-        throw new Error('Invalid refresh token');
-      }
+    if (!tokenRow) {
+      return { error: new Error('Invalid refresh token') };
+    }
 
-      // 2. Reuse detection: if revoked_at IS NOT NULL, revoke entire family!
-      if (tokenRow.revoked_at !== null) {
-        await trx
-          .updateTable('refresh_tokens')
-          .set({ revoked_at: new Date() })
-          .where('family_id', '=', tokenRow.family_id)
-          .where('revoked_at', 'is', null)
-          .execute();
-
-        throw new TokenReuseError();
-      }
-
-      // 3. Expiration check
-      if (new Date(tokenRow.expires_at) < new Date()) {
-        throw new Error('Expired refresh token');
-      }
-
-      // 4. Revoke current token
-      const now = new Date();
-      await trx
+    // 2. Reuse detection: if revoked_at IS NOT NULL, revoke entire family!
+    if (tokenRow.revoked_at !== null) {
+      await systemDb
         .updateTable('refresh_tokens')
-        .set({ revoked_at: now })
-        .where('id', '=', tokenRow.id)
+        .set({ revoked_at: new Date() })
+        .where('family_id', '=', tokenRow.family_id)
         .execute();
 
-      // 5. Fetch user & workspaces for new access token
-      const user = await trx
-        .selectFrom('users')
-        .where('id', '=', tokenRow.user_id)
-        .select(['id', 'email'])
-        .executeTakeFirst();
+      return { reuse: true };
+    }
 
-      if (!user) {
-        throw new Error('User not found');
-      }
+    // 3. Expiration check
+    if (new Date(tokenRow.expires_at) < new Date()) {
+      return { error: new Error('Expired refresh token') };
+    }
 
-      const memberships = await trx
-        .selectFrom('workspace_members')
-        .where('user_id', '=', user.id)
-        .select(['workspace_id as id', 'role'])
-        .execute();
+    // 4. Revoke current token
+    const now = new Date();
+    await systemDb
+      .updateTable('refresh_tokens')
+      .set({ revoked_at: now })
+      .where('id', '=', tokenRow.id)
+      .execute();
 
-      // 6. Issue replacement token with same family_id
-      const newRefreshToken = await issueRefreshToken(trx, user.id, tokenRow.family_id);
-      const accessToken = issueAccessToken(user, memberships);
+    // 5. Fetch user & workspaces for new access token
+    const user = await systemDb
+      .selectFrom('users')
+      .where('id', '=', tokenRow.user_id)
+      .select(['id', 'email'])
+      .executeTakeFirst();
 
-      return {
-        accessToken,
-        rawRefreshToken: newRefreshToken.rawToken,
-        expiresAt: newRefreshToken.expiresAt,
-      };
-    });
+    if (!user) {
+      return { error: new Error('User not found') };
+    }
+
+    const memberships = await systemDb
+      .selectFrom('workspace_members')
+      .where('user_id', '=', user.id)
+      .select(['workspace_id as id', 'role'])
+      .execute();
+
+    // 6. Issue replacement token with same family_id
+    const env = getEnv();
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const newHash = hashToken(rawToken);
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + env.JWT_REFRESH_EXPIRY_DAYS);
+
+    await systemDb
+      .insertInto('refresh_tokens')
+      .values({
+        user_id: user.id,
+        family_id: tokenRow.family_id,
+        token_hash: newHash,
+        expires_at: expiresAt,
+      })
+      .execute();
+
+    const accessToken = issueAccessToken(user, memberships);
+
+    return {
+      accessToken,
+      rawRefreshToken: rawToken,
+      expiresAt,
+    };
   });
+
+  if ('reuse' in res) {
+    throw new TokenReuseError();
+  }
+  if ('error' in res) {
+    throw res.error;
+  }
+  return res;
 }
 
 export async function revokeTokenFamily(dbOrFamilyId: Kysely<Database> | string, familyId?: string): Promise<void> {

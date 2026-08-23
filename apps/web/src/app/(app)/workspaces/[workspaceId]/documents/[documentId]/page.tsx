@@ -47,7 +47,11 @@ export default function DocumentPage({
       setDocument(res.document);
       setCapabilities(res.capabilities);
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
+      if (err instanceof ApiError && err.status === 403) {
+        setError('403: Access Denied to Document');
+      } else if (err instanceof ApiError && err.status === 404) {
+        setError('404: Document Not Found');
+      } else if (err instanceof ApiError && (err.status === 0 || err.status >= 500)) {
         // Dev preview fallback for document
         setDocument({
           id: documentId,
@@ -68,10 +72,8 @@ export default function DocumentPage({
           canArchive: true,
           canManagePermissions: true,
         });
-      } else if (err instanceof ApiError && err.status === 403) {
-        setError('You do not have permission to view this document.');
       } else {
-        setError('Failed to load document');
+        setError('Failed to connect to server');
       }
     } finally {
       setLoading(false);
@@ -100,13 +102,24 @@ export default function DocumentPage({
   }
 
   if (error || !document) {
+    const is403 = error?.includes('403');
     return (
       <div className={styles.pageWrapper}>
         <div className={styles.errorState}>
           <h1 className={styles.errorHeading}>{error || 'Document Not Found'}</h1>
-          <Button onClick={() => router.push(`/workspaces/${workspaceId}`)}>
-            Back to Workspace
-          </Button>
+          <p style={{ color: 'var(--fg-secondary)', fontSize: 'var(--text-sm)', maxWidth: 400 }}>
+            {is403
+              ? 'You do not have permission to access or edit this document. Contact your workspace administrator to request access.'
+              : 'The requested document does not exist or has been removed.'}
+          </p>
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <Button variant="secondary" onClick={fetchDocument}>
+              Retry Connection
+            </Button>
+            <Button variant="primary" onClick={() => router.push(`/workspaces/${workspaceId}`)}>
+              Back to Workspace
+            </Button>
+          </div>
         </div>
       </div>
     );

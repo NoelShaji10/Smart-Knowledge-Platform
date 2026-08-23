@@ -50,7 +50,8 @@ describe('Token Rotation & Reuse Detection Integration', () => {
       .post('/api/v1/auth/register')
       .send({ email, password, displayName: 'Reuse Route User' });
 
-    const cookie1 = regRes.get('Set-Cookie').find((c: string) => c.startsWith('refreshToken='));
+    const rawCookie = regRes.get('Set-Cookie').find((c: string) => c.startsWith('refreshToken='));
+    const cookie1 = rawCookie.split(';')[0];
 
     // First refresh
     const refRes1 = await request(app)

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';
 import { createApiApp } from '../../apps/api-server/src/app';
 import { issueAccessToken } from '@knowledge/auth';
@@ -7,6 +7,10 @@ import * as redisModule from '@knowledge/redis';
 describe('MEDIUM 5: Auth Rate Limiting Fail-Closed on Redis Failure', () => {
   const app = createApiApp();
   const dummyToken = issueAccessToken({ id: '00000000-0000-0000-0000-000000000001', email: 'test@example.com' });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it('returns 503 Rate limiter unavailable when Redis throws error on register', async () => {
     vi.spyOn(redisModule, 'getRedisClient').mockReturnValueOnce({

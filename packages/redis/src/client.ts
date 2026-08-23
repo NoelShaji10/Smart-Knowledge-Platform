@@ -9,8 +9,8 @@ export function getRedisClient(): Redis {
     const env = getEnv();
     dataRedisInstance = new Redis(env.REDIS_URL, {
       maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
-      lazyConnect: true,
+      enableOfflineQueue: true,
+      lazyConnect: false,
     });
     dataRedisInstance.on('error', () => {
       // suppress unhandled error listener crash in offline test environments

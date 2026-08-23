@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { Kysely, Transaction } from 'kysely';
+import { Kysely, Transaction, sql } from 'kysely';
 import { Database, ScopedDb } from '@knowledge/database';
 
 export const DEFAULT_MAX_DOCUMENT_DEPTH = 15;
@@ -105,6 +105,9 @@ async function getSubtreeDepth(
 export async function createDocument(scopedDb: ScopedDb, input: CreateDocumentInput) {
   return scopedDb.execute(async (db) => {
     const { workspaceId, title, parentId, contentText, createdBy } = input;
+    // Serialize hierarchy changes within one workspace for the transaction.
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`document-hierarchy:${workspaceId}`}))`.execute(db);
+
     const cleanParentId = parentId || null;
 
     if (cleanParentId) {
@@ -307,6 +310,9 @@ export async function moveDocument(
   newParentId: string | null,
 ) {
   return scopedDb.execute(async (db) => {
+    // Prevent reciprocal concurrent moves from passing independent cycle checks.
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`document-hierarchy:${workspaceId}`}))`.execute(db);
+
     const doc = await db
       .selectFrom('documents')
       .where('id', '=', documentId)

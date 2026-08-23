@@ -234,6 +234,15 @@ export interface DocumentVersion {
   created_at: string;
 }
 
+export interface DocumentPermissionOverride {
+  id: string;
+  email: string;
+  display_name: string;
+  role: 'editor' | 'viewer' | 'none';
+  granted_by: string;
+  created_at: string;
+}
+
 export const api = {
   login: (data: { email: string; password: string }) =>
     apiRequest<AuthResponse>('/api/v1/auth/login', {
@@ -322,6 +331,32 @@ export const api = {
     apiRequest<{ document: Document }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/restore`, {
       method: 'POST',
     }),
+
+  listDocumentPermissions: (workspaceId: string, documentId: string) =>
+    apiRequest<{ permissions: DocumentPermissionOverride[] }>(
+      `/api/v1/workspaces/${workspaceId}/documents/${documentId}/permissions`,
+      { method: 'GET' },
+    ),
+
+  setDocumentPermission: (
+    workspaceId: string,
+    documentId: string,
+    targetUserId: string,
+    role: 'editor' | 'viewer' | 'none',
+  ) =>
+    apiRequest<{ permission: DocumentPermissionOverride }>(
+      `/api/v1/workspaces/${workspaceId}/documents/${documentId}/permissions/${targetUserId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ role }),
+      },
+    ),
+
+  removeDocumentPermission: (workspaceId: string, documentId: string, targetUserId: string) =>
+    apiRequest<{ ok: boolean }>(
+      `/api/v1/workspaces/${workspaceId}/documents/${documentId}/permissions/${targetUserId}`,
+      { method: 'DELETE' },
+    ),
 
   listVersions: (workspaceId: string, documentId: string) =>
     apiRequest<{ versions: DocumentVersion[] }>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions`, {

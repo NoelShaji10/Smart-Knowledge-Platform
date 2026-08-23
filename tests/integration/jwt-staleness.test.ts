@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import { createApiApp } from '../../apps/api-server/src/app';
-import { runMigrations, getSystemDb } from '@knowledge/database';
+import { runMigrations, getSystemDb, withSystemContext } from '@knowledge/database';
 import { registerUser, loginUser } from '@knowledge/auth';
 import { createWorkspace } from '../../apps/api-server/src/lib/workspace-service';
 
@@ -28,11 +28,13 @@ describe('JWT Staleness & DB Authoritative Check Integration', () => {
 
     const ws = await createWorkspace(db, owner.id, 'Stale JWT Test Workspace');
 
-    await db.insertInto('workspace_members').values({
-      workspace_id: ws.id,
-      user_id: member.id,
-      role: 'editor',
-    }).execute();
+    await withSystemContext(async (sysDb) => {
+      await sysDb.insertInto('workspace_members').values({
+        workspace_id: ws.id,
+        user_id: member.id,
+        role: 'editor',
+      }).execute();
+    });
 
     // Member logs in and gets access token claiming workspace membership
     const loginRes = await loginUser(db, { email: member.email, password: 'Password123!' });
@@ -46,10 +48,12 @@ describe('JWT Staleness & DB Authoritative Check Integration', () => {
     expect(res1.status).toBe(200);
 
     // Remove member from DB directly
-    await db.deleteFrom('workspace_members')
-      .where('workspace_id', '=', ws.id)
-      .where('user_id', '=', member.id)
-      .execute();
+    await withSystemContext(async (sysDb) => {
+      await sysDb.deleteFrom('workspace_members')
+        .where('workspace_id', '=', ws.id)
+        .where('user_id', '=', member.id)
+        .execute();
+    });
 
     // Subsequent request with old (stale) JWT is rejected because requireWorkspace queries DB!
     const res2 = await request(app)

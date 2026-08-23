@@ -1,8 +1,11 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
+import path from 'path';
 
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 dotenv.config({ path: '.env' });
 if (!process.env.DATABASE_URL) {
+  dotenv.config({ path: path.resolve(__dirname, '../../../.env.test') });
   dotenv.config({ path: '.env.test' });
 }
 

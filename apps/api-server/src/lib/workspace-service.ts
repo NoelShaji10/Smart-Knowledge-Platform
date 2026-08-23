@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Kysely } from 'kysely';
-import { Database, ScopedDb } from '@knowledge/database';
+import { Database, ScopedDb, withSystemContext } from '@knowledge/database';
 import { WorkspaceRole } from '@knowledge/types';
 
 export function slugify(text: string): string {
@@ -48,7 +48,7 @@ export async function createWorkspace(
   if ('execute' in db && typeof db.execute === 'function') {
     return (db as ScopedDb).execute(async (trx) => doCreate(trx));
   }
-  return (db as Kysely<Database>).transaction().execute(async (trx) => doCreate(trx));
+  return withSystemContext(async (systemDb) => doCreate(systemDb));
 }
 
 export async function getUserWorkspaces(scopedDb: ScopedDb) {

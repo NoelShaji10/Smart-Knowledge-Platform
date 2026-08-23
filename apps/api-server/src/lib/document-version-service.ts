@@ -21,6 +21,7 @@ export async function createVersionCheckpoint(
       .where('id', '=', documentId)
       .where('workspace_id', '=', workspaceId)
       .select(['id', 'title', 'content_text', 'is_archived'])
+      .forUpdate()
       .executeTakeFirst();
 
     if (!doc) {
@@ -173,6 +174,7 @@ export async function restoreVersion(
       .where('id', '=', documentId)
       .where('workspace_id', '=', workspaceId)
       .select(['id', 'parent_id', 'is_archived'])
+      .forUpdate()
       .executeTakeFirst();
 
     if (!doc) {

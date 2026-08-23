@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { getEnv } from '@knowledge/config';
@@ -147,7 +148,7 @@ authRouter.post(
         actorId: null,
         action: 'auth.token.refreshed',
         resourceType: 'session',
-        resourceId: 'refresh',
+        resourceId: crypto.randomUUID(),
         ipAddress: req.ip,
         userAgent: req.get('user-agent'),
       });

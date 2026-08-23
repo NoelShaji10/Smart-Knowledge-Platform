@@ -32,11 +32,7 @@ export async function emitAuditEvent(
       .execute();
   };
 
-  if (params.workspaceId === null) {
-    await withSystemContext(async (sysDb) => {
-      await doInsert(sysDb);
-    });
-  } else {
-    await doInsert(db);
-  }
+  await withSystemContext(async (sysDb) => {
+    await doInsert(sysDb);
+  });
 }

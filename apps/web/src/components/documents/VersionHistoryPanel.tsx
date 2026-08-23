@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import DOMPurify from 'isomorphic-dompurify';
 import { DocumentVersion, api, ApiError, Document } from '@/lib/api';
 import { Button, Badge, Skeleton, useToast } from '@/components/ui';
 import styles from './VersionHistoryPanel.module.css';
@@ -11,6 +12,21 @@ export interface VersionHistoryPanelProps {
   canEdit?: boolean;
   onClose: () => void;
   onVersionRestored: (newDoc: Document) => void;
+}
+
+function getTriggerBadge(trigger: string) {
+  switch (trigger) {
+    case 'manual':
+      return <Badge variant="owner">Manual Checkpoint</Badge>;
+    case 'restore':
+      return <Badge variant="admin">Restored Version</Badge>;
+    case 'auto_interval':
+      return <Badge variant="default">Auto Saved</Badge>;
+    case 'session_end':
+      return <Badge variant="viewer">Session Saved</Badge>;
+    default:
+      return <Badge variant="default">{trigger}</Badge>;
+  }
 }
 
 export function VersionHistoryPanel({
@@ -46,6 +62,17 @@ export function VersionHistoryPanel({
             trigger: 'manual',
             created_at: new Date(Date.now() - 3600000).toISOString(),
           },
+          {
+            id: 'ver-2',
+            document_id: documentId,
+            version_number: 2,
+            snapshot_key: 'snapshots/2',
+            content_text: '<p>Restored content from historical snapshot.</p>',
+            title: 'Restored Version',
+            created_by: 'demo-user-1',
+            trigger: 'restore',
+            created_at: new Date(Date.now() - 1800000).toISOString(),
+          },
         ]);
       } else {
         showToast('Failed to load version history', 'error');
@@ -64,11 +91,13 @@ export function VersionHistoryPanel({
     try {
       const res = await api.restoreVersion(workspaceId, documentId, versionNumber);
       onVersionRestored(res.document);
-      showToast(`Restored version v${versionNumber}`, 'success');
+      showToast(`Restored version v${versionNumber} as new version checkpoint`, 'success');
       setPreviewVersion(null);
       fetchVersions();
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You do not have permission to restore versions', 'error');
+      } else if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
         showToast(`Restored version v${versionNumber} (Preview)`, 'success');
         setPreviewVersion(null);
       } else {
@@ -102,10 +131,11 @@ export function VersionHistoryPanel({
               <div key={ver.id} className={styles.versionCard}>
                 <div className={styles.versionHeader}>
                   <span className={styles.versionNum}>v{ver.version_number}</span>
-                  <Badge variant="default">{ver.trigger}</Badge>
+                  {getTriggerBadge(ver.trigger)}
                 </div>
                 <div className={styles.versionMeta}>
-                  {new Date(ver.created_at).toLocaleString()}
+                  Created {new Date(ver.created_at).toLocaleString()}
+                  {ver.created_by && <span> • Author: {ver.created_by}</span>}
                 </div>
                 <div className={styles.versionActions}>
                   <Button variant="ghost" size="sm" onClick={() => setPreviewVersion(ver)}>
@@ -138,6 +168,7 @@ export function VersionHistoryPanel({
                 </h3>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-tertiary)' }}>
                   Created {new Date(previewVersion.created_at).toLocaleString()} via {previewVersion.trigger}
+                  {previewVersion.created_by && ` by ${previewVersion.created_by}`}
                 </div>
               </div>
               <Button variant="ghost" size="sm" onClick={() => setPreviewVersion(null)}>
@@ -147,8 +178,14 @@ export function VersionHistoryPanel({
 
             <div
               className={styles.previewBody}
-              dangerouslySetInnerHTML={{ __html: previewVersion.content_text || '<p>(Empty version)</p>' }}
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(previewVersion.content_text || '<p>(Empty version)</p>'),
+              }}
             />
+
+            <div style={{ padding: 'var(--space-2) 0', fontSize: 'var(--text-xs)', color: 'var(--fg-secondary)', fontStyle: 'italic' }}>
+              Note: Restoring this version creates a NEW version checkpoint. Existing history is preserved.
+            </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-2)' }}>
               <Button variant="secondary" size="sm" onClick={() => setPreviewVersion(null)}>

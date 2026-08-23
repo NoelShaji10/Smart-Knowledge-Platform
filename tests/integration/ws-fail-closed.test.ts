@@ -99,11 +99,14 @@ describe('HIGH 3: WebSocket Connection Authorization Fail-Closed & Revalidation'
 
     // Re-add workspace member
     await withSystemContext(async (db) => {
-      await db.insertInto('workspace_members').values({
-        workspace_id: workspaceId,
-        user_id: memberUser.id,
-        role: 'editor',
-      }).execute();
+      await db.insertInto('workspace_members')
+        .values({
+          workspace_id: workspaceId,
+          user_id: memberUser.id,
+          role: 'editor',
+        })
+        .onConflict((oc) => oc.columns(['workspace_id', 'user_id']).doUpdateSet({ role: 'editor' }))
+        .execute();
 
       // Add explicit 'none' permission on document
       await db.insertInto('document_permissions').values({

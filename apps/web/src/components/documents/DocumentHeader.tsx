@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Document, DocumentCapabilities, api, ApiError } from '@/lib/api';
 import { Button, Badge, useToast } from '@/components/ui';
+import { DocumentPermissionsModal } from './DocumentPermissionsModal';
 import { SaveState } from '../editor/DocumentEditor';
 import styles from './DocumentHeader.module.css';
 
@@ -25,6 +26,7 @@ export function DocumentHeader({
 }: DocumentHeaderProps) {
   const { showToast } = useToast();
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
+  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   const handleCreateVersion = async () => {
@@ -86,6 +88,17 @@ export function DocumentHeader({
         </div>
 
         <div className={styles.actionSection}>
+          {capabilities.canManagePermissions && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowPermissionsModal(true)}
+              title="Manage Document Permissions"
+            >
+              Permissions
+            </Button>
+          )}
+
           {capabilities.canEdit && !document.is_archived && (
             <Button variant="secondary" size="sm" onClick={handleCreateVersion} disabled={actionLoading}>
               Save Version
@@ -114,6 +127,14 @@ export function DocumentHeader({
           )}
         </div>
       </header>
+
+      {showPermissionsModal && (
+        <DocumentPermissionsModal
+          workspaceId={workspaceId}
+          documentId={document.id}
+          onClose={() => setShowPermissionsModal(false)}
+        />
+      )}
 
       {showArchiveConfirm && (
         <div className={styles.confirmModalBackdrop} onClick={() => setShowArchiveConfirm(false)}>

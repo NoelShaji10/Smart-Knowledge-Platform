@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { runMigrations, getSystemDb, createScopedDb } from '@knowledge/database';
+import { runMigrations, getSystemDb, createScopedDb, withSystemContext } from '@knowledge/database';
 import { registerUser } from '@knowledge/auth';
 import { createWorkspace } from '../../apps/api-server/src/lib/workspace-service';
 import { emitAuditEvent } from '../../apps/api-server/src/lib/audit';
@@ -49,11 +49,13 @@ describe('Security Test: NULL-workspace Audit Event RLS Isolation', () => {
     });
 
     // 3. System DB (unscoped) can see both events
-    const allSystemEvents = await systemDb
-      .selectFrom('audit_events')
-      .where('actor_id', '=', user.id)
-      .selectAll()
-      .execute();
+    const allSystemEvents = await withSystemContext(async (sysDb) => {
+      return sysDb
+        .selectFrom('audit_events')
+        .where('actor_id', '=', user.id)
+        .selectAll()
+        .execute();
+    });
 
     const nullWorkspaceEvent = allSystemEvents.find((e) => e.workspace_id === null);
     expect(nullWorkspaceEvent).toBeDefined();

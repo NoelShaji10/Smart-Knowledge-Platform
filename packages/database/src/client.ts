@@ -55,7 +55,7 @@ export async function withUserContext<T>(
 ): Promise<T> {
   const db = getDb();
   return db.transaction().execute(async (trx) => {
-    await sql`SET LOCAL app.current_user_id = ${userId}`.execute(trx);
+    await sql`SELECT set_config('app.current_user_id', ${userId}, true)`.execute(trx);
     return fn(trx);
   });
 }
@@ -65,7 +65,7 @@ export async function withSystemContext<T>(
 ): Promise<T> {
   const db = getSystemDb();
   return db.transaction().execute(async (trx) => {
-    await sql`SET LOCAL app.is_system = 'true'`.execute(trx);
+    await sql`SELECT set_config('app.is_system', 'true', true)`.execute(trx);
     return fn(trx);
   });
 }

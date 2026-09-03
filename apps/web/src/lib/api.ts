@@ -258,6 +258,8 @@ export const api = {
 
   refresh: () => refreshAccessTokenSingleFlight(),
 
+  getMe: () => apiRequest<{ user: User }>('/api/v1/auth/me', { method: 'GET' }),
+
   logout: async () => {
     try {
       await apiRequest<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' });

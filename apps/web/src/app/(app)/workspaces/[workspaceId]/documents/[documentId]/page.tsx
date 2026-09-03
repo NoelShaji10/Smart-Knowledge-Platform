@@ -12,6 +12,7 @@ import { Skeleton, Button, useToast } from '@/components/ui';
 import { DocumentHeader } from '@/components/documents/DocumentHeader';
 import { DocumentEditor, SaveState } from '@/components/editor/DocumentEditor';
 import { VersionHistoryPanel } from '@/components/documents/VersionHistoryPanel';
+import { useWorkspace } from '@/contexts/WorkspaceContext';
 import styles from './page.module.css';
 
 export default function DocumentPage({
@@ -21,6 +22,7 @@ export default function DocumentPage({
 }) {
   const router = useRouter();
   const { showToast } = useToast();
+  const { activeWorkspace, loadWorkspace } = useWorkspace();
 
   const workspaceId = params?.workspaceId || '';
   const documentId = params?.documentId || '';
@@ -38,6 +40,12 @@ export default function DocumentPage({
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showHistory, setShowHistory] = useState(false);
 
+  useEffect(() => {
+    if (workspaceId && activeWorkspace?.id !== workspaceId) {
+      loadWorkspace(workspaceId);
+    }
+  }, [workspaceId, activeWorkspace, loadWorkspace]);
+
   const fetchDocument = useCallback(async () => {
     if (!workspaceId || !documentId) return;
     setLoading(true);
@@ -47,31 +55,19 @@ export default function DocumentPage({
       setDocument(res.document);
       setCapabilities(res.capabilities);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setError('403: Access Denied to Document');
-      } else if (err instanceof ApiError && err.status === 404) {
-        setError('404: Document Not Found');
-      } else if (err instanceof ApiError && (err.status === 0 || err.status >= 500)) {
-        // Dev preview fallback for document
-        setDocument({
-          id: documentId,
-          workspace_id: workspaceId,
-          parent_id: null,
-          title: 'Welcome to Smart Knowledge Platform',
-          content_text: '<h1>Welcome!</h1><p>This is a functional rich-text document powered by Tiptap. You can edit the title, format text, and view version history.</p>',
-          snapshot_version: 1,
-          is_archived: false,
-          created_by: 'demo-user-1',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        setCapabilities({
-          canRead: true,
-          canEdit: true,
-          canMove: true,
-          canArchive: true,
-          canManagePermissions: true,
-        });
+      setDocument(null);
+      if (err instanceof ApiError) {
+        if (err.status === 403) {
+          setError('403: Access Denied to Document');
+        } else if (err.status === 404) {
+          setError('404: Document Not Found');
+        } else if (err.status === 0) {
+          setError('Network Error: Unable to Connect');
+        } else if (err.status >= 500) {
+          setError('Unable to Load Document (Server Error)');
+        } else {
+          setError(err.message || 'Failed to load document');
+        }
       } else {
         setError('Failed to connect to server');
       }
@@ -103,16 +99,26 @@ export default function DocumentPage({
 
   if (error || !document) {
     const is403 = error?.includes('403');
+    const is404 = error?.includes('404');
+    const is500 = error?.includes('Server Error') || error?.includes('500');
+
+    let description = 'Unable to load this document right now. Please check your connection and try again.';
+    if (is403) {
+      description = 'You do not have permission to access or edit this document. Contact your workspace administrator to request access.';
+    } else if (is404) {
+      description = 'The requested document does not exist or has been removed.';
+    } else if (is500) {
+      description = 'Unable to load this document right now. Your data is safely stored in PostgreSQL. Please try again.';
+    }
+
     return (
       <div className={styles.pageWrapper}>
         <div className={styles.errorState}>
           <h1 className={styles.errorHeading}>{error || 'Document Not Found'}</h1>
-          <p style={{ color: 'var(--fg-secondary)', fontSize: 'var(--text-sm)', maxWidth: 400 }}>
-            {is403
-              ? 'You do not have permission to access or edit this document. Contact your workspace administrator to request access.'
-              : 'The requested document does not exist or has been removed.'}
+          <p style={{ color: 'var(--fg-secondary)', fontSize: 'var(--text-sm)', maxWidth: 440, textAlign: 'center' }}>
+            {description}
           </p>
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-4)' }}>
             <Button variant="secondary" onClick={fetchDocument}>
               Retry Connection
             </Button>

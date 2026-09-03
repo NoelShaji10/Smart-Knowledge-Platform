@@ -35,12 +35,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const token = await api.refresh();
         if (token && isMounted) {
-          // Fetch workspaces to verify token & get initial user context if available
           try {
-            const wsRes = await api.getWorkspaces();
-            // User exists and is authenticated
+            const meRes = await api.getMe();
+            if (meRes.user && isMounted) {
+              setUser(meRes.user);
+            }
           } catch {
-            // Workspace call failed, token may still be valid
+            try {
+              const parts = token.split('.');
+              if (parts.length === 3) {
+                const payload = JSON.parse(atob(parts[1]));
+                if (payload?.sub && isMounted) {
+                  setUser({
+                    id: payload.sub,
+                    email: payload.email || 'user@example.com',
+                    displayName: payload.email?.split('@')[0] || 'User',
+                  });
+                }
+              }
+            } catch {
+              // Ignore payload decode failure
+            }
           }
         }
         if (isMounted) {
@@ -98,21 +113,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(res.user);
       return res.user;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Fallback for dev preview when backend server/db is unattached
-        const demoUser: User = {
-          id: 'demo-user-1',
-          email,
-          displayName: email.split('@')[0] || 'Demo User',
-        };
-        setAccessToken('demo-jwt-token');
-        setUser(demoUser);
-        setIsNetworkError(false);
-        setError(null);
-        return demoUser;
-      }
       if (err instanceof ApiError) {
-        if (err.status === 429) {
+        if (err.status === 0) {
+          setError('Unable to connect to auth server. Please check your network connection.');
+        } else if (err.status === 429) {
           setError('Too many attempts. Please try again later.');
         } else {
           setError(err.message || 'Invalid email or password');
@@ -132,21 +136,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(res.user);
       return res.user;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Fallback for dev preview when backend server/db is unattached
-        const demoUser: User = {
-          id: 'demo-user-1',
-          email,
-          displayName: displayName || email.split('@')[0] || 'Demo User',
-        };
-        setAccessToken('demo-jwt-token');
-        setUser(demoUser);
-        setIsNetworkError(false);
-        setError(null);
-        return demoUser;
-      }
       if (err instanceof ApiError) {
-        if (err.status === 429) {
+        if (err.status === 0) {
+          setError('Unable to connect to auth server. Please check your network connection.');
+        } else if (err.status === 429) {
           setError('Too many attempts. Please try again later.');
         } else {
           setError(err.message || 'Registration failed');

@@ -11,6 +11,8 @@ import {
   TokenReuseError,
 } from '@knowledge/auth';
 import { rateLimiter } from '../middleware/rate-limiter';
+import { authMiddleware } from '../middleware/auth';
+import { rlsMiddleware } from '../middleware/rls';
 import { emitAuditEvent } from '../lib/audit';
 
 export const authRouter: Router = Router();
@@ -42,6 +44,38 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+});
+
+authRouter.get('/api/v1/auth/me', authMiddleware, rlsMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user || !req.db) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const userRow = await req.db.execute(async (db) => {
+      return db
+        .selectFrom('users')
+        .where('id', '=', req.user!.userId)
+        .select(['id', 'email', 'display_name'])
+        .executeTakeFirst();
+    });
+
+    if (!userRow) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    res.json({
+      user: {
+        id: userRow.id,
+        email: userRow.email,
+        displayName: userRow.display_name,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 authRouter.post(
@@ -95,7 +129,7 @@ authRouter.post(
     maxRequests: env.RATE_LIMIT_LOGIN,
     failClosed: true,
   }),
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response) => {
     try {
       const { email, password } = loginSchema.parse(req.body);
 

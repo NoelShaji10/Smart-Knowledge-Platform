@@ -21,8 +21,8 @@ export async function createWorkspace(
   const uniqueSlug = `${baseSlug}-${crypto.randomBytes(4).toString('hex')}`;
   const workspaceId = crypto.randomUUID();
 
-  const doCreate = async (trx: Kysely<Database>) => {
-    const workspace = await trx
+  return withSystemContext(async (systemDb) => {
+    const workspace = await systemDb
       .insertInto('workspaces')
       .values({
         id: workspaceId,
@@ -33,7 +33,7 @@ export async function createWorkspace(
       .returning(['id', 'name', 'slug', 'settings', 'created_at'])
       .executeTakeFirstOrThrow();
 
-    await trx
+    await systemDb
       .insertInto('workspace_members')
       .values({
         workspace_id: workspace.id,
@@ -43,12 +43,7 @@ export async function createWorkspace(
       .execute();
 
     return workspace;
-  };
-
-  if ('execute' in db && typeof db.execute === 'function') {
-    return (db as ScopedDb).execute(async (trx) => doCreate(trx));
-  }
-  return withSystemContext(async (systemDb) => doCreate(systemDb));
+  });
 }
 
 export async function getUserWorkspaces(scopedDb: ScopedDb) {

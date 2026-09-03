@@ -125,30 +125,11 @@ export function DocumentTree() {
       const res = await api.listDocuments(activeWorkspace.id, { includeArchived: false });
       setDocuments(res.documents);
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Fallback demo documents for local preview
-        setDocuments([
-          {
-            id: 'doc-welcome-1',
-            workspace_id: activeWorkspace.id,
-            parent_id: null,
-            title: 'Welcome to Smart Knowledge Platform',
-            content_text: 'Start writing or editing documents with ease.',
-            created_by: 'demo-user-1',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          {
-            id: 'doc-getting-started',
-            workspace_id: activeWorkspace.id,
-            parent_id: 'doc-welcome-1',
-            title: 'Getting Started Guide',
-            content_text: 'This is a child document demonstrating nested document hierarchies.',
-            created_by: 'demo-user-1',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ]);
+      setDocuments([]);
+      if (err instanceof ApiError && err.status === 0) {
+        showToast('Unable to connect to server. Document tree offline.', 'error');
+      } else if (err instanceof ApiError && err.status >= 500) {
+        showToast('Unable to load document navigation from server.', 'error');
       } else {
         showToast('Failed to load document navigation', 'error');
       }

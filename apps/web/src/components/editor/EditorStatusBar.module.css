@@ -1,0 +1,29 @@
+.statusBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  color: var(--fg-tertiary);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  user-select: none;
+}
+
+.statItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.statItem strong {
+  color: var(--fg-secondary);
+  font-weight: 600;
+}
+
+.dotSeparator {
+  color: var(--fg-tertiary);
+  opacity: 0.6;
+}

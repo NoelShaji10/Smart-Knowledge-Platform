@@ -9,6 +9,8 @@
   border-radius: 8px;
   margin-bottom: var(--space-4);
   user-select: none;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .btn {
@@ -34,6 +36,11 @@
   color: var(--fg);
 }
 
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .btnActive {
   background-color: var(--accent-subtle);
   color: var(--accent);
@@ -50,4 +57,50 @@
   height: 20px;
   background-color: var(--border);
   margin: 0 var(--space-1);
+}
+
+.blockSelect {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border-radius: 4px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+}
+
+.blockSelect:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.blockSelect:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.highlightBadge {
+  background-color: #fef08a;
+  color: #854d0e;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-weight: 700;
+}
+
+.linkContainer {
+  position: relative;
+  display: inline-flex;
+}
+
+@media (max-width: 640px) {
+  .toolbar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding: var(--space-1.5) var(--space-2);
+  }
 }

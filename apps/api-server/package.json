@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch",
+    "dev": "tsc && node dist/index.js",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit"
   },

@@ -1,13 +1,17 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { EditorContent } from '@tiptap/react';
 import { Document, api, ApiError } from '@/lib/api';
 import { EditorToolbar } from './EditorToolbar';
+import { EditorStatusBar } from './EditorStatusBar';
+import { useEditorSetup } from '@/hooks/useEditorSetup';
+import { useEditorAutosave, SaveState } from '@/hooks/useEditorAutosave';
+import { EditorProvider, EditorMode, EditorContextType } from '@/contexts/EditorContext';
+import { KeyboardShortcutsExtension } from './extensions/KeyboardShortcuts';
 import styles from './DocumentEditor.module.css';
 
-export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+export type { SaveState };
 
 export interface DocumentEditorProps {
   workspaceId: string;
@@ -25,104 +29,111 @@ export function DocumentEditor({
   onDocumentUpdated,
 }: DocumentEditorProps) {
   const [title, setTitle] = useState(document.title || 'Untitled Document');
-  const [saveState, setSaveState] = useState<SaveState>('idle');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isSavingRef = useRef(false);
-  const editRevRef = useRef(0);
+  const [isFocusMode, setIsFocusMode] = useState(false);
   const lastDocIdRef = useRef<string>(document.id);
-  const latestContentRef = useRef({ title: document.title, contentText: document.content_text });
 
-  const updateSaveState = useCallback(
-    (state: SaveState) => {
-      setSaveState(state);
-      if (onSaveStateChange) onSaveStateChange(state);
-    },
-    [onSaveStateChange],
-  );
+  const toggleFocusMode = useCallback(() => {
+    setIsFocusMode((prev) => !prev);
+  }, []);
 
-  const saveChanges = useCallback(
-    async (newTitle: string, newContent: string, saveRev: number) => {
-      if (readOnly) return;
-      isSavingRef.current = true;
-      updateSaveState('saving');
-
+  const saveFn = useCallback(
+    async (newTitle: string, newContent: string, _saveRev: number) => {
       try {
         const res = await api.updateDocument(workspaceId, document.id, {
           title: newTitle,
           contentText: newContent,
         });
 
-        // Only mark saved and clear unsaved flag if no newer local edits occurred while save was in-flight
-        if (editRevRef.current === saveRev) {
-          updateSaveState('saved');
-          setHasUnsavedChanges(false);
-        }
-
         if (onDocumentUpdated) {
           onDocumentUpdated(res.document);
         }
       } catch (err) {
         if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-          // Dev preview fallback save
-          if (editRevRef.current === saveRev) {
-            updateSaveState('saved');
-            setHasUnsavedChanges(false);
-          }
-        } else {
-          updateSaveState('error');
+          // Dev preview fallback save: allow save state to settle as saved
+          return;
         }
-      } finally {
-        isSavingRef.current = false;
+        throw err;
       }
     },
-    [workspaceId, document.id, readOnly, updateSaveState, onDocumentUpdated],
+    [workspaceId, document.id, onDocumentUpdated],
   );
 
-  const triggerDebouncedSave = useCallback(
-    (newTitle: string, newContent: string) => {
-      if (readOnly) return;
-      editRevRef.current += 1;
-      const currentRev = editRevRef.current;
-      setHasUnsavedChanges(true);
-      latestContentRef.current = { title: newTitle, contentText: newContent };
+  const {
+    saveState,
+    hasUnsavedChanges,
+    editRevRef,
+    triggerDebouncedSave,
+    triggerImmediateSave,
+    resetEditState,
+  } = useEditorAutosave({
+    readOnly,
+    saveFn,
+    onSaveStateChange,
+    debounceMs: 1000,
+  });
 
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-
-      debounceTimerRef.current = setTimeout(() => {
-        saveChanges(newTitle, newContent, currentRev);
-      }, 1000);
+  const handleEditorUpdate = useCallback(
+    ({ html }: { html: string }) => {
+      triggerDebouncedSave(title, html);
     },
-    [readOnly, saveChanges],
+    [title, triggerDebouncedSave],
   );
 
-  const editor = useEditor({
-    extensions: [StarterKit],
+  const handleToggleLinkPopover = useCallback(() => {
+    if (readOnly) return;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('editor:toggle-link-popover'));
+    }
+  }, [readOnly]);
+
+  // Will be assigned after editor hook initialization
+  const latestEditorRef = useRef<ReturnType<typeof useEditorSetup>['editor'] | null>(null);
+
+  const handleManualSave = useCallback(() => {
+    if (readOnly) return;
+    const currentHtml = latestEditorRef.current ? latestEditorRef.current.getHTML() : document.content_text;
+    triggerImmediateSave(title, currentHtml);
+  }, [readOnly, document.content_text, title, triggerImmediateSave]);
+
+  const shortcutsExtension = useMemo(() => {
+    return KeyboardShortcutsExtension.configure({
+      onSave: handleManualSave,
+      onToggleLinkPopover: handleToggleLinkPopover,
+      onToggleFocusMode: toggleFocusMode,
+    });
+  }, [handleManualSave, handleToggleLinkPopover, toggleFocusMode]);
+
+  const { editor } = useEditorSetup({
     content: document.content_text || '<p></p>',
     editable: !readOnly,
-    onUpdate: ({ editor }) => {
-      const htmlContent = editor.getHTML();
-      triggerDebouncedSave(title, htmlContent);
-    },
+    extensions: [shortcutsExtension],
+    onUpdate: handleEditorUpdate,
   });
+
+  latestEditorRef.current = editor;
+
+  // Escape key handler to exit focus mode
+  useEffect(() => {
+    if (!isFocusMode) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setIsFocusMode(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFocusMode]);
 
   // Synchronize document props & handle document switching
   useEffect(() => {
     const isDocumentSwitch = document.id !== lastDocIdRef.current;
 
     if (isDocumentSwitch) {
-      // Navigated to a DIFFERENT document: reset local edit revision and load new document content
+      // Navigated to a DIFFERENT document: reset edit state, focus mode, and load new document content
       lastDocIdRef.current = document.id;
-      editRevRef.current = 0;
-      setHasUnsavedChanges(false);
+      resetEditState();
+      setIsFocusMode(false);
       setTitle(document.title || 'Untitled Document');
-      setSaveState('idle');
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
 
       if (editor) {
         editor.commands.setContent(document.content_text || '<p></p>');
@@ -137,7 +148,7 @@ export function DocumentEditor({
         }
       }
     }
-  }, [document.id, document.title, document.content_text, editor, hasUnsavedChanges]);
+  }, [document.id, document.title, document.content_text, editor, hasUnsavedChanges, editRevRef, resetEditState]);
 
   // Unsaved changes browser unload guard
   useEffect(() => {
@@ -158,23 +169,51 @@ export function DocumentEditor({
     triggerDebouncedSave(val, currentHtml);
   };
 
+  const editorMode: EditorMode = readOnly ? 'readonly' : 'editing';
+
+  const contextValue: EditorContextType = {
+    editor,
+    readOnly,
+    saveState,
+    hasUnsavedChanges,
+    editorMode,
+    isFocusMode,
+    toggleFocusMode,
+    triggerSave: (newTitle: string, newContent: string) => triggerImmediateSave(newTitle, newContent),
+  };
+
   return (
-    <div className={styles.editorWrapper}>
-      <input
-        type="text"
-        value={title}
-        onChange={handleTitleChange}
-        disabled={readOnly}
-        placeholder="Untitled Document"
-        className={styles.titleInput}
-        aria-label="Document Title"
-      />
+    <EditorProvider value={contextValue}>
+      <div className={`${styles.editorWrapper} ${isFocusMode ? styles.focusMode : ''}`}>
+        {isFocusMode && (
+          <div className={styles.focusBadge} role="status">
+            <span>⛶ Focus Mode</span>
+          </div>
+        )}
 
-      <EditorToolbar editor={editor} disabled={readOnly} />
+        <input
+          type="text"
+          value={title}
+          onChange={handleTitleChange}
+          disabled={readOnly}
+          placeholder="Untitled Document"
+          className={styles.titleInput}
+          aria-label="Document Title"
+        />
 
-      <div className={styles.editorArea}>
-        <EditorContent editor={editor} />
+        <EditorToolbar
+          editor={editor}
+          disabled={readOnly}
+          isFocusMode={isFocusMode}
+          onToggleFocusMode={toggleFocusMode}
+        />
+
+        <div className={styles.editorArea} role="region" aria-label="Document content editor">
+          <EditorContent editor={editor} />
+        </div>
+
+        <EditorStatusBar editor={editor} />
       </div>
-    </div>
+    </EditorProvider>
   );
 }

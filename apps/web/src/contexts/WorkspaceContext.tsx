@@ -1,7 +1,6 @@
-'use client';
-
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { api, Workspace, ApiError } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface WorkspaceContextType {
   workspaces: Workspace[];
@@ -18,6 +17,7 @@ interface WorkspaceContextType {
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
   const [userRole, setUserRole] = useState<'owner' | 'admin' | 'editor' | 'viewer' | null>(null);
@@ -32,29 +32,35 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setWorkspaces(res.workspaces);
       return res.workspaces;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        const demoWorkspaces: Workspace[] = [
-          {
-            id: 'demo-workspace-1',
-            name: 'Acme Engineering',
-            slug: 'acme-engineering',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ];
-        setWorkspaces(demoWorkspaces);
-        return demoWorkspaces;
-      }
       if (err instanceof ApiError) {
-        setError(err.message);
+        if (err.status === 0) {
+          setError('Unable to connect to the server. Please check your network connection.');
+        } else if (err.status >= 500) {
+          setError('Unable to load workspaces. Your data is safely stored in PostgreSQL. Please try again.');
+        } else {
+          setError(err.message || 'Failed to load workspaces');
+        }
       } else {
         setError('Failed to load workspaces');
       }
+      setWorkspaces([]);
       return [];
     } finally {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!authLoading) {
+      if (user) {
+        refreshWorkspaces();
+      } else {
+        setWorkspaces([]);
+        setActiveWorkspace(null);
+        setUserRole(null);
+      }
+    }
+  }, [user, authLoading, refreshWorkspaces]);
 
   const loadWorkspace = useCallback(async (workspaceId: string): Promise<Workspace | null> => {
     setLoading(true);
@@ -63,22 +69,25 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       const res = await api.getWorkspace(workspaceId);
       setActiveWorkspace(res.workspace);
       setUserRole(res.userRole);
+      setWorkspaces((prev) => {
+        const exists = prev.some((w) => w.id === res.workspace.id);
+        if (exists) {
+          return prev.map((w) => (w.id === res.workspace.id ? res.workspace : w));
+        }
+        return [...prev, res.workspace];
+      });
       return res.workspace;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        const demoWs: Workspace = {
-          id: workspaceId || 'demo-workspace-1',
-          name: 'Acme Engineering',
-          slug: 'acme-engineering',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        setActiveWorkspace(demoWs);
-        setUserRole('owner');
-        return demoWs;
-      }
       if (err instanceof ApiError) {
-        setError(err.message);
+        if (err.status === 0) {
+          setError('Unable to connect to the server. Please check your network connection.');
+        } else if (err.status === 404) {
+          setError('Workspace not found.');
+        } else if (err.status >= 500) {
+          setError('Unable to load workspace details. Your data is safely stored in PostgreSQL. Please try again.');
+        } else {
+          setError(err.message || 'Failed to load workspace details');
+        }
       } else {
         setError('Failed to load workspace details');
       }
@@ -100,21 +109,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setUserRole('owner');
       return res.workspace;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        const newWs: Workspace = {
-          id: `workspace-${Date.now()}`,
-          name,
-          slug: name.toLowerCase().replace(/\s+/g, '-'),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        setWorkspaces((prev) => [...prev, newWs]);
-        setActiveWorkspace(newWs);
-        setUserRole('owner');
-        return newWs;
-      }
       if (err instanceof ApiError) {
-        setError(err.message);
+        setError(err.message || 'Failed to create workspace');
       } else {
         setError('Failed to create workspace');
       }

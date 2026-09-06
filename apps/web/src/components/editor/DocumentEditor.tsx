@@ -5,6 +5,7 @@ import { EditorContent } from '@tiptap/react';
 import { Document, api, ApiError } from '@/lib/api';
 import { EditorToolbar } from './EditorToolbar';
 import { EditorStatusBar } from './EditorStatusBar';
+import { useToast } from '@/components/ui';
 import { useEditorSetup } from '@/hooks/useEditorSetup';
 import { useEditorAutosave, SaveState } from '@/hooks/useEditorAutosave';
 import { useCollaboration } from '@/hooks/useCollaboration';
@@ -36,12 +37,16 @@ export function DocumentEditor({
 }: DocumentEditorProps) {
   const isCollaborative = collaborative ?? (!readOnly && !document.is_archived);
   const { user: authUser } = useAuth();
+  const { showToast } = useToast();
 
   const [title, setTitle] = useState(document.title || 'Untitled Document');
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [collabTitleSaveState, setCollabTitleSaveState] = useState<SaveState>('saved');
+
   const lastDocIdRef = useRef<string>(document.id);
-  const titleEditRevRef = useRef<number>(0);
   const titleDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const inFlightTitlePromiseRef = useRef<Promise<void> | null>(null);
+  const pendingTitleToSaveRef = useRef<string | null>(null);
 
   const toggleFocusMode = useCallback(() => {
     setIsFocusMode((prev) => !prev);
@@ -80,30 +85,75 @@ export function DocumentEditor({
     [workspaceId, document.id, onDocumentUpdated, isCollaborative],
   );
 
-  const triggerCollabTitleSave = useCallback(
-    (newTitle: string) => {
-      titleEditRevRef.current += 1;
-      const currentRev = titleEditRevRef.current;
+  const executeTitleSave = useCallback(
+    async (titleToSend: string): Promise<void> => {
+      setCollabTitleSaveState('saving');
+      const docIdAtStart = document.id;
 
-      if (titleDebounceTimerRef.current) {
-        clearTimeout(titleDebounceTimerRef.current);
-      }
-
-      titleDebounceTimerRef.current = setTimeout(async () => {
+      const savePromise = (async () => {
         try {
-          const res = await api.updateDocument(workspaceId, document.id, { title: newTitle });
-          if (titleEditRevRef.current === currentRev) {
-            titleEditRevRef.current = 0;
+          const res = await api.updateDocument(workspaceId, docIdAtStart, { title: titleToSend });
+
+          // Document switch safety guard
+          if (lastDocIdRef.current !== docIdAtStart) {
+            return;
+          }
+
+          const nextPending = pendingTitleToSaveRef.current;
+          pendingTitleToSaveRef.current = null;
+
+          if (nextPending !== null && nextPending !== titleToSend) {
+            await executeTitleSave(nextPending);
+          } else {
+            setCollabTitleSaveState('saved');
             if (onDocumentUpdated) {
               onDocumentUpdated(res.document);
             }
           }
         } catch (err) {
-          console.error('Failed to update title in collaborative mode:', err);
+          // Document switch safety guard
+          if (lastDocIdRef.current !== docIdAtStart) {
+            return;
+          }
+
+          pendingTitleToSaveRef.current = null;
+          setCollabTitleSaveState('error');
+          showToast('Failed to save document title', 'error');
+        } finally {
+          inFlightTitlePromiseRef.current = null;
         }
+      })();
+
+      inFlightTitlePromiseRef.current = savePromise;
+      return savePromise;
+    },
+    [workspaceId, document.id, onDocumentUpdated, showToast],
+  );
+
+  const queueCollabTitleSave = useCallback(
+    (targetTitle: string) => {
+      setCollabTitleSaveState('saving');
+      if (inFlightTitlePromiseRef.current !== null) {
+        pendingTitleToSaveRef.current = targetTitle;
+      } else {
+        executeTitleSave(targetTitle);
+      }
+    },
+    [executeTitleSave],
+  );
+
+  const triggerCollabTitleSave = useCallback(
+    (newTitle: string) => {
+      setCollabTitleSaveState('saving');
+      if (titleDebounceTimerRef.current) {
+        clearTimeout(titleDebounceTimerRef.current);
+      }
+
+      titleDebounceTimerRef.current = setTimeout(() => {
+        queueCollabTitleSave(newTitle);
       }, 500);
     },
-    [workspaceId, document.id, onDocumentUpdated],
+    [queueCollabTitleSave],
   );
 
   useEffect(() => {
@@ -210,7 +260,9 @@ export function DocumentEditor({
         clearTimeout(titleDebounceTimerRef.current);
         titleDebounceTimerRef.current = null;
       }
-      titleEditRevRef.current = 0;
+      pendingTitleToSaveRef.current = null;
+      inFlightTitlePromiseRef.current = null;
+      setCollabTitleSaveState('saved');
       resetEditState();
       setIsFocusMode(false);
       setTitle(document.title || 'Untitled Document');
@@ -227,7 +279,7 @@ export function DocumentEditor({
           }
         }
       } else {
-        if (titleEditRevRef.current === 0) {
+        if (collabTitleSaveState === 'saved' && pendingTitleToSaveRef.current === null && inFlightTitlePromiseRef.current === null) {
           setTitle(document.title || 'Untitled Document');
         }
       }
@@ -241,6 +293,7 @@ export function DocumentEditor({
     editRevRef,
     resetEditState,
     isCollaborative,
+    collabTitleSaveState,
   ]);
 
   // Unsaved changes unload guard
@@ -266,6 +319,31 @@ export function DocumentEditor({
     }
   };
 
+  const effectiveSaveState: SaveState = useMemo(() => {
+    if (!isCollaborative) {
+      return saveState;
+    }
+    if (collabTitleSaveState === 'error') {
+      return 'error';
+    }
+    if (collabTitleSaveState === 'saving' || pendingTitleToSaveRef.current !== null || inFlightTitlePromiseRef.current !== null) {
+      return 'saving';
+    }
+    if (collabStatus === 'connected') {
+      return 'saved';
+    }
+    if (collabStatus === 'connecting') {
+      return 'saving';
+    }
+    return 'error';
+  }, [isCollaborative, saveState, collabTitleSaveState, collabStatus]);
+
+  useEffect(() => {
+    if (onSaveStateChange) {
+      onSaveStateChange(effectiveSaveState);
+    }
+  }, [effectiveSaveState, onSaveStateChange]);
+
   const editorMode: EditorMode = isCollaborative
     ? 'collaborative'
     : readOnly
@@ -275,7 +353,7 @@ export function DocumentEditor({
   const contextValue: EditorContextType = {
     editor,
     readOnly: !isEditable,
-    saveState: isCollaborative ? 'saved' : saveState,
+    saveState: effectiveSaveState,
     hasUnsavedChanges: isCollaborative ? false : hasUnsavedChanges,
     editorMode,
     isFocusMode,

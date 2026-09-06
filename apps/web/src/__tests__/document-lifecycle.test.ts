@@ -116,42 +116,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     );
   });
 
-  it('5. Stale title update response does NOT overwrite a newer local title edit', () => {
-    let titleEditRev = 0;
-    let localTitle = 'Initial Title';
-
-    // 1. User types edit A
-    titleEditRev += 1;
-    const revA = titleEditRev; // revA = 1
-    localTitle = 'Title Edit A';
-
-    // 2. User types edit B while request A is in flight
-    titleEditRev += 1;
-    const revB = titleEditRev; // revB = 2
-    localTitle = 'Title Edit B';
-
-    // 3. Request A finishes with title "Title Edit A"
-    const responseATitle = 'Title Edit A';
-    if (revA === titleEditRev) {
-      localTitle = responseATitle;
-    }
-
-    // 4. Verify localTitle is preserved as Edit B
-    expect(localTitle).toBe('Title Edit B');
-    expect(titleEditRev).toBe(2);
-
-    // 5. Request B finishes with title "Title Edit B"
-    const responseBTitle = 'Title Edit B';
-    if (revB === titleEditRev) {
-      localTitle = responseBTitle;
-      titleEditRev = 0;
-    }
-
-    expect(localTitle).toBe('Title Edit B');
-    expect(titleEditRev).toBe(0);
-  });
-
-  it('6. Archive API failure throws ApiError and does NOT fake local archive success', async () => {
+  it('5. Archive API failure throws ApiError and does NOT fake local archive success', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -168,7 +133,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     }
   });
 
-  it('7. Restore API failure throws ApiError and does NOT fake local restore success', async () => {
+  it('6. Restore API failure throws ApiError and does NOT fake local restore success', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -185,7 +150,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     }
   });
 
-  it('8. Document switching clears edit state and loads target document state', () => {
+  it('7. Document switching clears edit state and loads target document state', () => {
     let currentDocId = 'doc-A';
     let localTitle = 'Title A';
     let editRev = 3;
@@ -203,7 +168,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     expect(editRev).toBe(0);
   });
 
-  it('9. Browser refresh reconstructs document state strictly from server response', async () => {
+  it('8. Browser refresh reconstructs document state strictly from server response', async () => {
     const serverDoc: Document = {
       id: 'doc-persisted-123',
       workspace_id: 'ws-1',
@@ -230,7 +195,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     expect(res.document.content_text).toBe('<p>Persisted Server Content</p>');
   });
 
-  it('10. Collaborative mode bypasses legacy content autosave endpoint', async () => {
+  it('9. Collaborative mode bypasses legacy content autosave endpoint', async () => {
     let autosaveTriggered = false;
 
     const isCollaborative = true;
@@ -243,7 +208,7 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     expect(autosaveTriggered).toBe(false);
   });
 
-  it('11. Document API failure does NOT generate demo or preview document data', async () => {
+  it('10. Document API failure does NOT generate demo or preview document data', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -254,5 +219,90 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     await expect(api.createDocument('ws-1', { title: 'Test' })).rejects.toThrow(ApiError);
     await expect(api.archiveDocument('ws-1', 'doc-1')).rejects.toThrow(ApiError);
     await expect(api.restoreDocument('ws-1', 'doc-1')).rejects.toThrow(ApiError);
+  });
+
+  it('11. Real asynchronous title update queueing guarantees newest title intent is persisted and stale responses cannot overwrite', async () => {
+    const executedTitles: string[] = [];
+    let activeInFlightPromise: Promise<void> | null = null;
+    let pendingTitle: string | null = null;
+    let currentSavedTitle = 'Original Title';
+
+    const mockApiUpdate = vi.fn(async (title: string, delayMs: number) => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      currentSavedTitle = title;
+      executedTitles.push(title);
+    });
+
+    const executeTitleSave = async (titleToSend: string, delayMs: number) => {
+      const promise = (async () => {
+        try {
+          await mockApiUpdate(titleToSend, delayMs);
+          const next = pendingTitle;
+          pendingTitle = null;
+          if (next !== null && next !== titleToSend) {
+            await executeTitleSave(next, 10);
+          }
+        } finally {
+          activeInFlightPromise = null;
+        }
+      })();
+
+      activeInFlightPromise = promise;
+      return promise;
+    };
+
+    const queueTitleSave = (targetTitle: string, delayMs: number) => {
+      if (activeInFlightPromise !== null) {
+        pendingTitle = targetTitle;
+      } else {
+        executeTitleSave(targetTitle, delayMs);
+      }
+    };
+
+    // 1. Queue Title A with 60ms delay (in-flight)
+    queueTitleSave('Title A', 60);
+
+    // 2. Queue Title B and Title C while Title A is in-flight
+    queueTitleSave('Title B', 30);
+    queueTitleSave('Title C', 10);
+
+    // 3. Await first in-flight request
+    await activeInFlightPromise;
+
+    // Allow second queued operation to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Verify Title A executed first, then Title C executed second (Title B coalesced into newest intent)
+    expect(executedTitles).toEqual(['Title A', 'Title C']);
+    expect(currentSavedTitle).toBe('Title C');
+  });
+
+  it('12. Document switch isolates in-flight title save callbacks from target document', async () => {
+    let activeDocId = 'doc-A';
+    let docBTitle = 'Doc B Initial Title';
+    let docBToastError: string | null = null;
+
+    const mockInFlightSave = vi.fn(async (docIdAtStart: string) => {
+      await new Promise((r) => setTimeout(r, 40));
+      if (activeDocId !== docIdAtStart) {
+        // Document switch guard: return early
+        return;
+      }
+      docBTitle = 'Mutated Title';
+      docBToastError = 'Error Toast';
+    });
+
+    // Start save for doc-A
+    const promiseA = mockInFlightSave('doc-A');
+
+    // Switch to doc-B
+    activeDocId = 'doc-B';
+
+    // Wait for promiseA to complete
+    await promiseA;
+
+    // Verify doc-B remains completely unaffected
+    expect(docBTitle).toBe('Doc B Initial Title');
+    expect(docBToastError).toBeNull();
   });
 });

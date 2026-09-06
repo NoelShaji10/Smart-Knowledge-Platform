@@ -29,29 +29,10 @@ export function DocumentPermissionsModal({
       const res = await api.listDocumentPermissions(workspaceId, documentId);
       setPermissions(res.permissions);
     } catch (err) {
+      setPermissions([]);
       if (err instanceof ApiError && err.status === 403) {
         showToast('Access denied: You cannot manage permissions for this document', 'error');
         onClose();
-      } else if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Dev preview fallback permission overrides
-        setPermissions([
-          {
-            id: 'user-editor-1',
-            email: 'editor@example.com',
-            display_name: 'Jane Editor',
-            role: 'editor',
-            granted_by: 'owner-1',
-            created_at: new Date().toISOString(),
-          },
-          {
-            id: 'user-denied-1',
-            email: 'denied@example.com',
-            display_name: 'Restricted User',
-            role: 'none',
-            granted_by: 'owner-1',
-            created_at: new Date().toISOString(),
-          },
-        ]);
       } else {
         showToast('Failed to load document permissions', 'error');
       }
@@ -96,19 +77,6 @@ export function DocumentPermissionsModal({
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         showToast('Access denied: Only owners and admins can set permissions', 'error');
-      } else if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Dev preview fallback
-        const newOverride: DocumentPermissionOverride = {
-          id: targetUserId.trim(),
-          email: `${targetUserId.trim()}@example.com`,
-          display_name: `User ${targetUserId.slice(0, 6)}`,
-          role: targetRole,
-          granted_by: 'current-user',
-          created_at: new Date().toISOString(),
-        };
-        setPermissions((prev) => [...prev.filter((p) => p.id !== newOverride.id), newOverride]);
-        showToast(`Permission set (Preview)`, 'success');
-        setTargetUserId('');
       } else {
         showToast('Failed to set document permission', 'error');
       }
@@ -125,9 +93,6 @@ export function DocumentPermissionsModal({
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         showToast('Access denied: You cannot remove this permission', 'error');
-      } else if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        setPermissions((prev) => prev.filter((p) => p.id !== userId));
-        showToast('Permission override removed (Preview)', 'info');
       } else {
         showToast('Failed to remove permission override', 'error');
       }
@@ -142,11 +107,8 @@ export function DocumentPermissionsModal({
       );
       showToast('Role updated successfully', 'success');
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        setPermissions((prev) =>
-          prev.map((p) => (p.id === userId ? { ...p, role: newRole } : p)),
-        );
-        showToast('Role updated (Preview)', 'success');
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You cannot update this role', 'error');
       } else {
         showToast('Failed to update role', 'error');
       }

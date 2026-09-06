@@ -153,20 +153,8 @@ export function DocumentTree() {
       setDocuments((prev) => [...prev, res.document]);
       router.push(`/workspaces/${activeWorkspace.id}/documents/${res.document.id}`);
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Fallback creation for dev preview
-        const newDoc: Document = {
-          id: `doc-${Date.now()}`,
-          workspace_id: activeWorkspace.id,
-          parent_id: parentId,
-          title: 'Untitled Document',
-          content_text: '',
-          created_by: 'demo-user-1',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        setDocuments((prev) => [...prev, newDoc]);
-        router.push(`/workspaces/${activeWorkspace.id}/documents/${newDoc.id}`);
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You do not have permission to create documents in this workspace', 'error');
       } else {
         showToast('Failed to create document', 'error');
       }

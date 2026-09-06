@@ -48,32 +48,9 @@ export function VersionHistoryPanel({
       const res = await api.listVersions(workspaceId, documentId);
       setVersions(res.versions);
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        // Fallback demo versions for dev preview
-        setVersions([
-          {
-            id: 'ver-1',
-            document_id: documentId,
-            version_number: 1,
-            snapshot_key: 'snapshots/1',
-            content_text: '<p>Initial version of document content.</p>',
-            title: 'Initial Draft',
-            created_by: 'demo-user-1',
-            trigger: 'manual',
-            created_at: new Date(Date.now() - 3600000).toISOString(),
-          },
-          {
-            id: 'ver-2',
-            document_id: documentId,
-            version_number: 2,
-            snapshot_key: 'snapshots/2',
-            content_text: '<p>Restored content from historical snapshot.</p>',
-            title: 'Restored Version',
-            created_by: 'demo-user-1',
-            trigger: 'restore',
-            created_at: new Date(Date.now() - 1800000).toISOString(),
-          },
-        ]);
+      setVersions([]);
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You cannot view version history for this document', 'error');
       } else {
         showToast('Failed to load version history', 'error');
       }
@@ -97,9 +74,6 @@ export function VersionHistoryPanel({
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         showToast('Access denied: You do not have permission to restore versions', 'error');
-      } else if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        showToast(`Restored version v${versionNumber} (Preview)`, 'success');
-        setPreviewVersion(null);
       } else {
         showToast('Failed to restore version', 'error');
       }

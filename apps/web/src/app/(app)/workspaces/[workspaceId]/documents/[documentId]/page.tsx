@@ -158,10 +158,12 @@ export default function DocumentPage({
                   const res = await api.restoreDocument(workspaceId, document.id);
                   handleDocumentUpdated(res.document);
                   showToast('Document restored', 'success');
-                } catch {
-                  const updated = { ...document, is_archived: false };
-                  handleDocumentUpdated(updated);
-                  showToast('Document restored', 'success');
+                } catch (err) {
+                  if (err instanceof ApiError && err.status === 403) {
+                    showToast('Access denied: You do not have permission to restore this document', 'error');
+                  } else {
+                    showToast('Failed to restore document', 'error');
+                  }
                 }
               }}
             >

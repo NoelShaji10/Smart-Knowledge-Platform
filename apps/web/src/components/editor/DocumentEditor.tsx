@@ -40,6 +40,8 @@ export function DocumentEditor({
   const [title, setTitle] = useState(document.title || 'Untitled Document');
   const [isFocusMode, setIsFocusMode] = useState(false);
   const lastDocIdRef = useRef<string>(document.id);
+  const titleEditRevRef = useRef<number>(0);
+  const titleDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const toggleFocusMode = useCallback(() => {
     setIsFocusMode((prev) => !prev);
@@ -66,25 +68,51 @@ export function DocumentEditor({
   const saveFn = useCallback(
     async (newTitle: string, newContent: string, _saveRev: number) => {
       if (isCollaborative) return;
-      try {
-        const res = await api.updateDocument(workspaceId, document.id, {
-          title: newTitle,
-          contentText: newContent,
-        });
+      const res = await api.updateDocument(workspaceId, document.id, {
+        title: newTitle,
+        contentText: newContent,
+      });
 
-        if (onDocumentUpdated) {
-          onDocumentUpdated(res.document);
-        }
-      } catch (err) {
-        if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-          // Dev preview fallback save
-          return;
-        }
-        throw err;
+      if (onDocumentUpdated) {
+        onDocumentUpdated(res.document);
       }
     },
     [workspaceId, document.id, onDocumentUpdated, isCollaborative],
   );
+
+  const triggerCollabTitleSave = useCallback(
+    (newTitle: string) => {
+      titleEditRevRef.current += 1;
+      const currentRev = titleEditRevRef.current;
+
+      if (titleDebounceTimerRef.current) {
+        clearTimeout(titleDebounceTimerRef.current);
+      }
+
+      titleDebounceTimerRef.current = setTimeout(async () => {
+        try {
+          const res = await api.updateDocument(workspaceId, document.id, { title: newTitle });
+          if (titleEditRevRef.current === currentRev) {
+            titleEditRevRef.current = 0;
+            if (onDocumentUpdated) {
+              onDocumentUpdated(res.document);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to update title in collaborative mode:', err);
+        }
+      }, 500);
+    },
+    [workspaceId, document.id, onDocumentUpdated],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (titleDebounceTimerRef.current) {
+        clearTimeout(titleDebounceTimerRef.current);
+      }
+    };
+  }, []);
 
   // In collaborative mode, disable autosave completely (readOnly: true)
   const {
@@ -178,6 +206,11 @@ export function DocumentEditor({
 
     if (isDocumentSwitch) {
       lastDocIdRef.current = document.id;
+      if (titleDebounceTimerRef.current) {
+        clearTimeout(titleDebounceTimerRef.current);
+        titleDebounceTimerRef.current = null;
+      }
+      titleEditRevRef.current = 0;
       resetEditState();
       setIsFocusMode(false);
       setTitle(document.title || 'Untitled Document');
@@ -194,7 +227,9 @@ export function DocumentEditor({
           }
         }
       } else {
-        setTitle(document.title || 'Untitled Document');
+        if (titleEditRevRef.current === 0) {
+          setTitle(document.title || 'Untitled Document');
+        }
       }
     }
   }, [
@@ -226,6 +261,8 @@ export function DocumentEditor({
     if (!isCollaborative) {
       const currentHtml = editor ? editor.getHTML() : document.content_text;
       triggerDebouncedSave(val, currentHtml);
+    } else {
+      triggerCollabTitleSave(val);
     }
   };
 

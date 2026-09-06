@@ -39,8 +39,8 @@ export function DocumentHeader({
       await api.createVersion(workspaceId, document.id);
       showToast('Version checkpoint created', 'success');
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        showToast('Version checkpoint created (Preview)', 'success');
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You do not have permission to create version checkpoints', 'error');
       } else {
         showToast('Failed to create version checkpoint', 'error');
       }
@@ -51,6 +51,7 @@ export function DocumentHeader({
 
   const handleArchiveToggle = async () => {
     setActionLoading(true);
+    const targetIsArchived = !document.is_archived;
     try {
       if (document.is_archived) {
         const res = await api.restoreDocument(workspaceId, document.id);
@@ -62,12 +63,10 @@ export function DocumentHeader({
         showToast('Document archived', 'info');
       }
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-        const updated = { ...document, is_archived: !document.is_archived };
-        onDocumentUpdated(updated);
-        showToast(updated.is_archived ? 'Document archived' : 'Document restored', 'info');
+      if (err instanceof ApiError && err.status === 403) {
+        showToast(`Access denied: You do not have permission to ${targetIsArchived ? 'archive' : 'restore'} this document`, 'error');
       } else {
-        showToast('Failed to change document archive state', 'error');
+        showToast(`Failed to ${targetIsArchived ? 'archive' : 'restore'} document`, 'error');
       }
     } finally {
       setActionLoading(false);

@@ -5,6 +5,8 @@ import { Document, DocumentCapabilities, api, ApiError } from '@/lib/api';
 import { Button, Badge, useToast } from '@/components/ui';
 import { DocumentPermissionsModal } from './DocumentPermissionsModal';
 import { SaveState } from '../editor/DocumentEditor';
+import { CollaboratorAvatars } from '../editor/CollaboratorAvatars';
+import { CollabUser } from '@/hooks/useCollaboration';
 import styles from './DocumentHeader.module.css';
 
 export interface DocumentHeaderProps {
@@ -12,6 +14,7 @@ export interface DocumentHeaderProps {
   document: Document;
   capabilities: DocumentCapabilities;
   saveState: SaveState;
+  connectedUsers?: CollabUser[];
   onToggleHistory: () => void;
   onDocumentUpdated: (doc: Document) => void;
 }
@@ -21,6 +24,7 @@ export function DocumentHeader({
   document,
   capabilities,
   saveState,
+  connectedUsers,
   onToggleHistory,
   onDocumentUpdated,
 }: DocumentHeaderProps) {
@@ -81,6 +85,7 @@ export function DocumentHeader({
             {saveState === 'error' && <span className={`${styles.saveBadge} ${styles.error}`}>Save Error</span>}
           </span>
 
+          {!capabilities.canEdit && !document.is_archived && <Badge variant="viewer">View Only</Badge>}
           {document.is_archived && <Badge variant="admin">Archived</Badge>}
           {document.snapshot_version && (
             <span className={styles.versionBadge}>v{document.snapshot_version}</span>
@@ -88,6 +93,10 @@ export function DocumentHeader({
         </div>
 
         <div className={styles.actionSection}>
+          {connectedUsers && connectedUsers.length > 0 && (
+            <CollaboratorAvatars users={connectedUsers} />
+          )}
+
           {capabilities.canManagePermissions && (
             <Button
               variant="ghost"

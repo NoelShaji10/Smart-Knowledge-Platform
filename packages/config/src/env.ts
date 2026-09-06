@@ -32,6 +32,7 @@ export const envSchema = z.object({
   RATE_LIMIT_REFRESH: z.coerce.number().default(30),
   RATE_LIMIT_WS_TICKET: z.coerce.number().default(30),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(60),
+  SNAPSHOT_DEBOUNCE_MS: z.coerce.number().default(2000),
 });
 
 export type Env = z.infer<typeof envSchema>;

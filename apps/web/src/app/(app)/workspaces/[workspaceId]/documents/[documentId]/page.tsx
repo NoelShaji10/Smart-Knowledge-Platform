@@ -177,6 +177,7 @@ export default function DocumentPage({
             workspaceId={workspaceId}
             document={document}
             readOnly={isReadOnly}
+            collaborative={!isReadOnly}
             onSaveStateChange={setSaveState}
             onDocumentUpdated={handleDocumentUpdated}
           />

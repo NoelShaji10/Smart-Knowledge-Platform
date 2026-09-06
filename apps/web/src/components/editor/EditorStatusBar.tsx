@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { Editor } from '@tiptap/react';
+import { CollabProviderStatus } from '@/lib/collab-provider';
+import { CollabUser } from '@/hooks/useCollaboration';
 import styles from './EditorStatusBar.module.css';
 
 export const WORDS_PER_MINUTE = 200;
@@ -15,9 +17,17 @@ export function calculateReadingTime(words: number): string {
 
 export interface EditorStatusBarProps {
   editor: Editor | null;
+  collabStatus?: CollabProviderStatus;
+  connectedUsers?: CollabUser[];
+  readOnly?: boolean;
 }
 
-export function EditorStatusBar({ editor }: EditorStatusBarProps) {
+export function EditorStatusBar({
+  editor,
+  collabStatus,
+  connectedUsers = [],
+  readOnly = false,
+}: EditorStatusBarProps) {
   const [stats, setStats] = useState({ words: 0, characters: 0 });
 
   useEffect(() => {
@@ -40,6 +50,18 @@ export function EditorStatusBar({ editor }: EditorStatusBarProps) {
   if (!editor) return null;
 
   const readingTime = calculateReadingTime(stats.words);
+  const userCount = connectedUsers.length;
+
+  const collabStatusLabel = (() => {
+    if (readOnly) return 'View Only';
+    if (collabStatus === 'connected') {
+      return userCount > 1 ? `Connected • ${userCount} collaborators` : 'Connected';
+    }
+    if (collabStatus === 'connecting') return 'Reconnecting...';
+    if (collabStatus === 'disconnected') return 'Disconnected';
+    if (collabStatus === 'error') return 'Connection Error';
+    return null;
+  })();
 
   return (
     <div className={styles.statusBar} role="status" aria-label="Document statistics">
@@ -52,6 +74,14 @@ export function EditorStatusBar({ editor }: EditorStatusBarProps) {
       </span>
       <span className={styles.dotSeparator}>•</span>
       <span className={styles.statItem}>{readingTime}</span>
+
+      {collabStatusLabel && (
+        <>
+          <span className={styles.dotSeparator}>•</span>
+          <span className={styles.statItem}>{collabStatusLabel}</span>
+        </>
+      )}
     </div>
   );
 }
+

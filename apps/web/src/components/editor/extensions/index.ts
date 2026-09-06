@@ -10,23 +10,43 @@ import TextAlign from '@tiptap/extension-text-align';
 import Subscript from '@tiptap/extension-subscript';
 import Superscript from '@tiptap/extension-superscript';
 import CharacterCount from '@tiptap/extension-character-count';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+import * as Y from 'yjs';
+import { CollabProvider } from '@/lib/collab-provider';
 import { SlashCommandsExtension } from './SlashCommands';
 
 export interface GetEditorExtensionsOptions {
   placeholder?: string;
   additionalExtensions?: AnyExtension[];
+  yDoc?: Y.Doc | null;
+  provider?: CollabProvider | null;
+  user?: {
+    name: string;
+    color: string;
+  };
 }
 
 /**
  * Returns the default suite of enhanced Tiptap extensions for the Smart Knowledge Platform editor.
- * Retains an injection boundary (additionalExtensions) for Phase 4 collaboration extensions.
+ * When yDoc and provider are supplied (collaborative mode):
+ * - StarterKit history is disabled to prevent duplicate history handlers & enable CRDT-aware undo/redo.
+ * - Tiptap Collaboration extension is added with the authoritative Y.Doc.
+ * - Tiptap CollaborationCursor extension is added for real-time remote cursor rendering.
+ * When yDoc is not supplied (normal mode):
+ * - Retains default StarterKit history and single-user editor extensions intact.
  */
 export function getDefaultEditorExtensions({
   placeholder = 'Write something or press "/" for commands...',
   additionalExtensions = [],
+  yDoc = null,
+  provider = null,
+  user,
 }: GetEditorExtensionsOptions = {}): AnyExtension[] {
-  return [
-    StarterKit,
+  const starterKitConfig = yDoc ? StarterKit.configure({ history: false }) : StarterKit;
+
+  const extensions: AnyExtension[] = [
+    starterKitConfig,
     Placeholder.configure({
       placeholder,
       emptyEditorClass: 'is-editor-empty',
@@ -55,6 +75,25 @@ export function getDefaultEditorExtensions({
     Superscript,
     CharacterCount,
     SlashCommandsExtension,
-    ...additionalExtensions,
   ];
+
+  if (yDoc) {
+    extensions.push(Collaboration.configure({ document: yDoc }));
+
+    if (provider && provider.awareness) {
+      extensions.push(
+        CollaborationCursor.configure({
+          provider: provider as any,
+          user: user || {
+            name: 'Collaborator',
+            color: '#3B82F6',
+          },
+        }),
+      );
+    }
+  }
+
+  extensions.push(...additionalExtensions);
+
+  return extensions;
 }

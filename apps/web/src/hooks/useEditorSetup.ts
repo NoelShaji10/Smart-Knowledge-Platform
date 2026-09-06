@@ -1,7 +1,9 @@
 'use client';
 
 import { useEditor, AnyExtension, Editor } from '@tiptap/react';
+import * as Y from 'yjs';
 import { getDefaultEditorExtensions } from '@/components/editor/extensions';
+import { CollabProvider } from '@/lib/collab-provider';
 
 export interface UseEditorSetupOptions {
   content: string;
@@ -10,6 +12,12 @@ export interface UseEditorSetupOptions {
   onUpdate?: (props: { html: string; editor: Editor }) => void;
   autofocus?: boolean | 'start' | 'end' | 'all' | number;
   placeholder?: string;
+  yDoc?: Y.Doc | null;
+  provider?: CollabProvider | null;
+  user?: {
+    name: string;
+    color: string;
+  };
 }
 
 export function useEditorSetup({
@@ -19,15 +27,20 @@ export function useEditorSetup({
   onUpdate,
   autofocus = false,
   placeholder,
+  yDoc = null,
+  provider = null,
+  user,
 }: UseEditorSetupOptions) {
   const configuredExtensions = getDefaultEditorExtensions({
     placeholder,
     additionalExtensions: extensions,
+    yDoc,
+    provider,
+    user,
   });
 
-  const editor = useEditor({
+  const editorOptions: Parameters<typeof useEditor>[0] = {
     extensions: configuredExtensions,
-    content: content || '<p></p>',
     editable: editable,
     autofocus,
     onUpdate: ({ editor }) => {
@@ -35,7 +48,15 @@ export function useEditorSetup({
         onUpdate({ html: editor.getHTML(), editor });
       }
     },
-  });
+  };
+
+  // When yDoc is not present, use standard HTML content initialization.
+  // When yDoc is present, Tiptap Collaboration extension owns document content initialization from Y.Doc.
+  if (!yDoc) {
+    editorOptions.content = content || '<p></p>';
+  }
+
+  const editor = useEditor(editorOptions, [yDoc, provider]);
 
   return {
     editor,

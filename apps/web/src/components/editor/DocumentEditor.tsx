@@ -7,8 +7,12 @@ import { EditorToolbar } from './EditorToolbar';
 import { EditorStatusBar } from './EditorStatusBar';
 import { useEditorSetup } from '@/hooks/useEditorSetup';
 import { useEditorAutosave, SaveState } from '@/hooks/useEditorAutosave';
+import { useCollaboration } from '@/hooks/useCollaboration';
+import { useAuth } from '@/contexts/AuthContext';
+import { getCollaboratorColor } from '@/lib/collab-colors';
 import { EditorProvider, EditorMode, EditorContextType } from '@/contexts/EditorContext';
 import { KeyboardShortcutsExtension } from './extensions/KeyboardShortcuts';
+import { ConnectionStatusBanner } from './ConnectionStatusBanner';
 import styles from './DocumentEditor.module.css';
 
 export type { SaveState };
@@ -17,6 +21,7 @@ export interface DocumentEditorProps {
   workspaceId: string;
   document: Document;
   readOnly?: boolean;
+  collaborative?: boolean;
   onSaveStateChange?: (state: SaveState) => void;
   onDocumentUpdated?: (doc: Document) => void;
 }
@@ -25,9 +30,13 @@ export function DocumentEditor({
   workspaceId,
   document,
   readOnly = false,
+  collaborative,
   onSaveStateChange,
   onDocumentUpdated,
 }: DocumentEditorProps) {
+  const isCollaborative = collaborative ?? (!readOnly && !document.is_archived);
+  const { user: authUser } = useAuth();
+
   const [title, setTitle] = useState(document.title || 'Untitled Document');
   const [isFocusMode, setIsFocusMode] = useState(false);
   const lastDocIdRef = useRef<string>(document.id);
@@ -36,8 +45,27 @@ export function DocumentEditor({
     setIsFocusMode((prev) => !prev);
   }, []);
 
+  const currentUser = useMemo(() => {
+    if (!authUser) return undefined;
+    const name = authUser.displayName || authUser.email?.split('@')[0] || 'User';
+    return {
+      id: authUser.id,
+      displayName: name,
+      color: getCollaboratorColor(authUser.id),
+    };
+  }, [authUser]);
+
+  // 1. Collaboration Hook Lifecycle
+  const { provider, yDoc, status: collabStatus, connectedUsers } = useCollaboration({
+    workspaceId,
+    documentId: document.id,
+    enabled: isCollaborative,
+    user: currentUser,
+  });
+
   const saveFn = useCallback(
     async (newTitle: string, newContent: string, _saveRev: number) => {
+      if (isCollaborative) return;
       try {
         const res = await api.updateDocument(workspaceId, document.id, {
           title: newTitle,
@@ -49,15 +77,16 @@ export function DocumentEditor({
         }
       } catch (err) {
         if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-          // Dev preview fallback save: allow save state to settle as saved
+          // Dev preview fallback save
           return;
         }
         throw err;
       }
     },
-    [workspaceId, document.id, onDocumentUpdated],
+    [workspaceId, document.id, onDocumentUpdated, isCollaborative],
   );
 
+  // In collaborative mode, disable autosave completely (readOnly: true)
   const {
     saveState,
     hasUnsavedChanges,
@@ -66,7 +95,7 @@ export function DocumentEditor({
     triggerImmediateSave,
     resetEditState,
   } = useEditorAutosave({
-    readOnly,
+    readOnly: readOnly || isCollaborative,
     saveFn,
     onSaveStateChange,
     debounceMs: 1000,
@@ -74,9 +103,10 @@ export function DocumentEditor({
 
   const handleEditorUpdate = useCallback(
     ({ html }: { html: string }) => {
+      if (isCollaborative) return;
       triggerDebouncedSave(title, html);
     },
-    [title, triggerDebouncedSave],
+    [title, triggerDebouncedSave, isCollaborative],
   );
 
   const handleToggleLinkPopover = useCallback(() => {
@@ -86,14 +116,21 @@ export function DocumentEditor({
     }
   }, [readOnly]);
 
-  // Will be assigned after editor hook initialization
   const latestEditorRef = useRef<ReturnType<typeof useEditorSetup>['editor'] | null>(null);
 
   const handleManualSave = useCallback(() => {
-    if (readOnly) return;
+    if (readOnly || isCollaborative) return;
     const currentHtml = latestEditorRef.current ? latestEditorRef.current.getHTML() : document.content_text;
     triggerImmediateSave(title, currentHtml);
-  }, [readOnly, document.content_text, title, triggerImmediateSave]);
+  }, [readOnly, isCollaborative, document.content_text, title, triggerImmediateSave]);
+
+  const isEditable = useMemo(() => {
+    if (readOnly) return false;
+    if (isCollaborative) {
+      return collabStatus === 'connected';
+    }
+    return true;
+  }, [readOnly, isCollaborative, collabStatus]);
 
   const shortcutsExtension = useMemo(() => {
     return KeyboardShortcutsExtension.configure({
@@ -103,16 +140,27 @@ export function DocumentEditor({
     });
   }, [handleManualSave, handleToggleLinkPopover, toggleFocusMode]);
 
+  // 2. Editor Setup with yDoc and provider for collaborative mode
   const { editor } = useEditorSetup({
     content: document.content_text || '<p></p>',
-    editable: !readOnly,
+    editable: isEditable,
     extensions: [shortcutsExtension],
     onUpdate: handleEditorUpdate,
+    yDoc: isCollaborative ? yDoc : null,
+    provider: isCollaborative ? provider : null,
+    user: currentUser ? { name: currentUser.displayName, color: currentUser.color } : undefined,
   });
 
   latestEditorRef.current = editor;
 
-  // Escape key handler to exit focus mode
+  // Dynamically set editor editable state when connection status or readOnly state changes
+  useEffect(() => {
+    if (editor && !editor.isDestroyed) {
+      editor.setEditable(isEditable);
+    }
+  }, [editor, isEditable]);
+
+  // Escape key handler for focus mode
   useEffect(() => {
     if (!isFocusMode) return;
     function handleKeyDown(e: KeyboardEvent) {
@@ -124,62 +172,82 @@ export function DocumentEditor({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFocusMode]);
 
-  // Synchronize document props & handle document switching
+  // 3. Document prop synchronization
   useEffect(() => {
     const isDocumentSwitch = document.id !== lastDocIdRef.current;
 
     if (isDocumentSwitch) {
-      // Navigated to a DIFFERENT document: reset edit state, focus mode, and load new document content
       lastDocIdRef.current = document.id;
       resetEditState();
       setIsFocusMode(false);
       setTitle(document.title || 'Untitled Document');
 
-      if (editor) {
+      if (!isCollaborative && editor) {
         editor.commands.setContent(document.content_text || '<p></p>');
       }
     } else {
-      // Receiving prop updates for the SAME document
-      // If user has local unsaved edits, NEVER overwrite title or editor content
-      if (!hasUnsavedChanges && editRevRef.current === 0) {
-        setTitle(document.title || 'Untitled Document');
-        if (editor && editor.getHTML() !== document.content_text) {
-          editor.commands.setContent(document.content_text || '<p></p>');
+      if (!isCollaborative) {
+        if (!hasUnsavedChanges && editRevRef.current === 0) {
+          setTitle(document.title || 'Untitled Document');
+          if (editor && editor.getHTML() !== document.content_text) {
+            editor.commands.setContent(document.content_text || '<p></p>');
+          }
         }
+      } else {
+        setTitle(document.title || 'Untitled Document');
       }
     }
-  }, [document.id, document.title, document.content_text, editor, hasUnsavedChanges, editRevRef, resetEditState]);
+  }, [
+    document.id,
+    document.title,
+    document.content_text,
+    editor,
+    hasUnsavedChanges,
+    editRevRef,
+    resetEditState,
+    isCollaborative,
+  ]);
 
-  // Unsaved changes browser unload guard
+  // Unsaved changes unload guard
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (hasUnsavedChanges) {
+      if (!isCollaborative && hasUnsavedChanges) {
         e.preventDefault();
         e.returnValue = '';
       }
     }
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, isCollaborative]);
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setTitle(val);
-    const currentHtml = editor ? editor.getHTML() : document.content_text;
-    triggerDebouncedSave(val, currentHtml);
+    if (!isCollaborative) {
+      const currentHtml = editor ? editor.getHTML() : document.content_text;
+      triggerDebouncedSave(val, currentHtml);
+    }
   };
 
-  const editorMode: EditorMode = readOnly ? 'readonly' : 'editing';
+  const editorMode: EditorMode = isCollaborative
+    ? 'collaborative'
+    : readOnly
+    ? 'readonly'
+    : 'editing';
 
   const contextValue: EditorContextType = {
     editor,
-    readOnly,
-    saveState,
-    hasUnsavedChanges,
+    readOnly: !isEditable,
+    saveState: isCollaborative ? 'saved' : saveState,
+    hasUnsavedChanges: isCollaborative ? false : hasUnsavedChanges,
     editorMode,
     isFocusMode,
     toggleFocusMode,
-    triggerSave: (newTitle: string, newContent: string) => triggerImmediateSave(newTitle, newContent),
+    triggerSave: (newTitle: string, newContent: string) => {
+      if (!isCollaborative) triggerImmediateSave(newTitle, newContent);
+    },
+    collabStatus,
+    connectedUsers: isCollaborative ? connectedUsers : [],
   };
 
   return (
@@ -191,11 +259,23 @@ export function DocumentEditor({
           </div>
         )}
 
+        {isCollaborative && (
+          <ConnectionStatusBanner
+            status={collabStatus}
+            readOnly={readOnly}
+            onRetry={() => {
+              if (provider) {
+                provider.connect();
+              }
+            }}
+          />
+        )}
+
         <input
           type="text"
           value={title}
           onChange={handleTitleChange}
-          disabled={readOnly}
+          disabled={readOnly || (isCollaborative && collabStatus !== 'connected')}
           placeholder="Untitled Document"
           className={styles.titleInput}
           aria-label="Document Title"
@@ -203,7 +283,7 @@ export function DocumentEditor({
 
         <EditorToolbar
           editor={editor}
-          disabled={readOnly}
+          disabled={readOnly || (isCollaborative && collabStatus !== 'connected')}
           isFocusMode={isFocusMode}
           onToggleFocusMode={toggleFocusMode}
         />
@@ -212,7 +292,12 @@ export function DocumentEditor({
           <EditorContent editor={editor} />
         </div>
 
-        <EditorStatusBar editor={editor} />
+        <EditorStatusBar
+          editor={editor}
+          collabStatus={isCollaborative ? collabStatus : undefined}
+          connectedUsers={isCollaborative ? connectedUsers : []}
+          readOnly={readOnly || (isCollaborative && collabStatus !== 'connected')}
+        />
       </div>
     </EditorProvider>
   );

@@ -381,4 +381,10 @@ export const api = {
       `/api/v1/workspaces/${workspaceId}/documents/${documentId}/versions/${versionNumber}/restore`,
       { method: 'POST' },
     ),
+
+  requestWsTicket: (workspaceId: string, documentId: string) =>
+    apiRequest<{ ticket: string }>('/api/v1/ws/ticket', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId, documentId }),
+    }),
 };

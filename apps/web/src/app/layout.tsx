@@ -1,8 +1,7 @@
 import React from 'react';
 import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
-import { AuthProvider } from '@/contexts/AuthContext';
-import { WorkspaceProvider } from '@/contexts/WorkspaceContext';
+import { Providers } from './providers';
 import '@/styles/globals.css';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
@@ -20,11 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <a href="#main-content" className="kp-skip-link">
           Skip to main content
         </a>
-        <AuthProvider>
-          <WorkspaceProvider>
-            {children}
-          </WorkspaceProvider>
-        </AuthProvider>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

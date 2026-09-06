@@ -3,8 +3,10 @@
 import React, { createContext, useContext } from 'react';
 import { Editor } from '@tiptap/react';
 import { SaveState } from '../hooks/useEditorAutosave';
+import { CollabProviderStatus } from '@/lib/collab-provider';
+import { CollabUser } from '@/hooks/useCollaboration';
 
-export type EditorMode = 'editing' | 'readonly' | 'preview'; // Ready for Phase 4: | 'collaborative'
+export type EditorMode = 'editing' | 'readonly' | 'preview' | 'collaborative';
 
 export interface EditorContextType {
   editor: Editor | null;
@@ -15,6 +17,8 @@ export interface EditorContextType {
   isFocusMode?: boolean;
   toggleFocusMode?: () => void;
   triggerSave?: (title: string, content: string) => void;
+  collabStatus?: CollabProviderStatus;
+  connectedUsers?: CollabUser[];
 }
 
 const EditorContext = createContext<EditorContextType | undefined>(undefined);

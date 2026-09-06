@@ -63,6 +63,7 @@
 .editorArea :global(.ProseMirror) {
   outline: none;
   min-height: 350px;
+  position: relative;
 }
 
 .editorArea :global(.ProseMirror p) {
@@ -129,6 +130,52 @@
   pointer-events: none;
 }
 
+/* Collaborative Cursors & Selection Styles */
+.editorArea :global(.collaboration-cursor__selection) {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.editorArea :global(.collaboration-cursor__caret) {
+  position: relative;
+  border-left: 2px solid;
+  border-right: 0px;
+  word-break: normal;
+  pointer-events: none;
+  margin-left: -1px;
+  margin-right: -1px;
+}
+
+.editorArea :global(.collaboration-cursor__caret div) {
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px 3px 3px 0;
+  color: #ffffff;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+}
+
+.collabStatusBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background-color: var(--surface-alt, #f4f4f5);
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm, 13px);
+  color: var(--fg-secondary, #71717a);
+  font-weight: 500;
+}
+
 @media (max-width: 768px) {
   .editorWrapper {
     padding: var(--space-4);
@@ -144,3 +191,4 @@
     transition: none !important;
   }
 }
+

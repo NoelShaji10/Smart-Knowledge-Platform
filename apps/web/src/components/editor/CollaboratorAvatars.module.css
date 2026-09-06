@@ -1,0 +1,57 @@
+.avatarGroup {
+  display: flex;
+  align-items: center;
+  gap: -6px;
+  position: relative;
+}
+
+.avatarItem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  border: 2px solid var(--bg-primary, #ffffff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  margin-left: -6px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  cursor: default;
+}
+
+.avatarItem:first-child {
+  margin-left: 0;
+}
+
+.avatarItem:hover {
+  transform: translateY(-2px) scale(1.1);
+  z-index: 10;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.overflowBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-secondary, #6b7280);
+  background-color: var(--bg-tertiary, #e5e7eb);
+  border: 2px solid var(--bg-primary, #ffffff);
+  margin-left: -6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  user-select: none;
+  cursor: default;
+}
+
+.overflowBadge:hover {
+  transform: translateY(-2px) scale(1.1);
+  z-index: 10;
+}

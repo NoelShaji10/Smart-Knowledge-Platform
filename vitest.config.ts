@@ -13,6 +13,7 @@ export default defineConfig({
       '@knowledge/jobs': path.resolve(__dirname, './packages/jobs/src/index.ts'),
       '@knowledge/ai-gateway': path.resolve(__dirname, './packages/ai-gateway/src/index.ts'),
       '@knowledge/vector-store': path.resolve(__dirname, './packages/vector-store/src/index.ts'),
+      '@': path.resolve(__dirname, './apps/web/src'),
     },
   },
   test: {

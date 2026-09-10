@@ -1,5 +1,38 @@
+// @vitest-environment jsdom
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api, ApiError, Document, setAccessToken } from '../lib/api';
+import { DocumentEditor } from '../components/editor/DocumentEditor';
+
+// Configure act environment for React 18
+// @ts-expect-error global IS_REACT_ACT_ENVIRONMENT
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { id: 'u1', email: 'user@example.com', displayName: 'User One' },
+    isAuthenticated: true,
+  }),
+}));
+
+const mockShowToast = vi.fn();
+vi.mock('@/components/ui', () => ({
+  useToast: () => ({
+    showToast: mockShowToast,
+  }),
+}));
+
+vi.mock('@/hooks/useCollaboration', () => ({
+  useCollaboration: () => ({
+    provider: null,
+    yDoc: null,
+    status: 'connected',
+    error: null,
+    connectedUsers: [],
+    indexeddbProvider: null,
+  }),
+}));
 
 describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
   beforeEach(() => {
@@ -220,89 +253,423 @@ describe('Phase 5 T1 — Core Document Lifecycle Repair Tests', () => {
     await expect(api.archiveDocument('ws-1', 'doc-1')).rejects.toThrow(ApiError);
     await expect(api.restoreDocument('ws-1', 'doc-1')).rejects.toThrow(ApiError);
   });
+});
 
-  it('11. Real asynchronous title update queueing guarantees newest title intent is persisted and stale responses cannot overwrite', async () => {
-    const executedTitles: string[] = [];
-    let activeInFlightPromise: Promise<void> | null = null;
-    let pendingTitle: string | null = null;
-    let currentSavedTitle = 'Original Title';
+describe('Phase 5 T1 — Real DocumentEditor Collaborative Title Persistence Tests', () => {
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
 
-    const mockApiUpdate = vi.fn(async (title: string, delayMs: number) => {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      currentSavedTitle = title;
-      executedTitles.push(title);
+  function changeTitle(input: HTMLInputElement, newTitle: string) {
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )?.set;
+    nativeInputValueSetter?.call(input, newTitle);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('11. Real asynchronous title race test: verifies debounce, single in-flight serialization, newest intent coalescing, and final title persistence', async () => {
+    vi.useFakeTimers();
+
+    const doc: Document = {
+      id: 'doc-1',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Initial Title',
+      content_text: '<p>Content</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const deferredA = createDeferred<{ document: Document }>();
+    const deferredC = createDeferred<{ document: Document }>();
+    const executedPayloads: Array<{ wsId: string; docId: string; data: { title?: string } }> = [];
+
+    vi.spyOn(api, 'updateDocument').mockImplementation(async (wsId, docId, data) => {
+      executedPayloads.push({ wsId, docId, data });
+      if (executedPayloads.length === 1) {
+        return deferredA.promise;
+      }
+      return deferredC.promise;
     });
 
-    const executeTitleSave = async (titleToSend: string, delayMs: number) => {
-      const promise = (async () => {
-        try {
-          await mockApiUpdate(titleToSend, delayMs);
-          const next = pendingTitle;
-          pendingTitle = null;
-          if (next !== null && next !== titleToSend) {
-            await executeTitleSave(next, 10);
-          }
-        } finally {
-          activeInFlightPromise = null;
-        }
-      })();
+    let latestSaveState = '';
+    let updatedDocReceived: Document | null = null;
+    let currentDoc = doc;
 
-      activeInFlightPromise = promise;
-      return promise;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    const renderEditor = () => {
+      root.render(
+        React.createElement(DocumentEditor, {
+          workspaceId: 'ws-1',
+          document: currentDoc,
+          collaborative: true,
+          onSaveStateChange: (s) => {
+            latestSaveState = s;
+          },
+          onDocumentUpdated: (d) => {
+            updatedDocReceived = d;
+            currentDoc = d;
+            renderEditor();
+          },
+        })
+      );
     };
 
-    const queueTitleSave = (targetTitle: string, delayMs: number) => {
-      if (activeInFlightPromise !== null) {
-        pendingTitle = targetTitle;
-      } else {
-        executeTitleSave(targetTitle, delayMs);
-      }
-    };
+    await act(async () => {
+      renderEditor();
+    });
 
-    // 1. Queue Title A with 60ms delay (in-flight)
-    queueTitleSave('Title A', 60);
+    const titleInput = container.querySelector('input') as HTMLInputElement;
+    expect(titleInput.value).toBe('Initial Title');
 
-    // 2. Queue Title B and Title C while Title A is in-flight
-    queueTitleSave('Title B', 30);
-    queueTitleSave('Title C', 10);
+    // 1. Trigger Title Edit A
+    await act(async () => {
+      changeTitle(titleInput, 'Title A');
+    });
+    expect(titleInput.value).toBe('Title A');
+    expect(executedPayloads).toHaveLength(0);
 
-    // 3. Await first in-flight request
-    await activeInFlightPromise;
+    // Advance timers for debounce (500ms)
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
 
-    // Allow second queued operation to complete
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Request A should now be in-flight
+    expect(executedPayloads).toHaveLength(1);
+    expect(executedPayloads[0]).toEqual({
+      wsId: 'ws-1',
+      docId: 'doc-1',
+      data: { title: 'Title A' },
+    });
+    expect(latestSaveState).toBe('saving');
 
-    // Verify Title A executed first, then Title C executed second (Title B coalesced into newest intent)
-    expect(executedTitles).toEqual(['Title A', 'Title C']);
-    expect(currentSavedTitle).toBe('Title C');
+    // 2. Trigger Title Edit B and Title Edit C while A is in flight
+    await act(async () => {
+      changeTitle(titleInput, 'Title B');
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    // Request B was coalesced into pendingTitle, not sent yet because A is still in-flight
+    expect(executedPayloads).toHaveLength(1);
+
+    await act(async () => {
+      changeTitle(titleInput, 'Title C');
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    // Request C replaced B in pendingTitle, still only 1 request in-flight
+    expect(executedPayloads).toHaveLength(1);
+
+    // 3. Resolve Request A
+    await act(async () => {
+      deferredA.resolve({
+        document: { ...doc, title: 'Title A' },
+      });
+      await Promise.resolve(); // Flush microtask queue
+    });
+
+    // Request C should immediately have executed (B was coalesced out)
+    expect(executedPayloads).toHaveLength(2);
+    expect(executedPayloads[1]).toEqual({
+      wsId: 'ws-1',
+      docId: 'doc-1',
+      data: { title: 'Title C' },
+    });
+
+    // 4. Resolve Request C
+    await act(async () => {
+      deferredC.resolve({
+        document: { ...doc, title: 'Title C' },
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestSaveState).toBe('saved');
+    expect((updatedDocReceived as Document | null)?.title).toBe('Title C');
+    expect(titleInput.value).toBe('Title C');
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
   });
 
-  it('12. Document switch isolates in-flight title save callbacks from target document', async () => {
-    let activeDocId = 'doc-A';
-    let docBTitle = 'Doc B Initial Title';
-    let docBToastError: string | null = null;
+  it('12. Real document switch race test: in-flight save for Document A does not mutate Document B or surface errors for Document B', async () => {
+    vi.useFakeTimers();
 
-    const mockInFlightSave = vi.fn(async (docIdAtStart: string) => {
-      await new Promise((r) => setTimeout(r, 40));
-      if (activeDocId !== docIdAtStart) {
-        // Document switch guard: return early
-        return;
+    const docA: Document = {
+      id: 'doc-A',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Doc A Initial',
+      content_text: '<p>A</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const docB: Document = {
+      id: 'doc-B',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Doc B Initial',
+      content_text: '<p>B</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const deferredA = createDeferred<{ document: Document }>();
+    vi.spyOn(api, 'updateDocument').mockImplementation(async (wsId, docId, data) => {
+      if (docId === 'doc-A') {
+        return deferredA.promise;
       }
-      docBTitle = 'Mutated Title';
-      docBToastError = 'Error Toast';
+      return { document: { ...docB, title: data.title || docB.title } };
     });
 
-    // Start save for doc-A
-    const promiseA = mockInFlightSave('doc-A');
+    let latestSaveState = '';
+    let updatedDocReceived: Document | null = null;
+    let currentDoc = docA;
 
-    // Switch to doc-B
-    activeDocId = 'doc-B';
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
 
-    // Wait for promiseA to complete
-    await promiseA;
+    const renderEditor = () => {
+      root.render(
+        React.createElement(DocumentEditor, {
+          workspaceId: 'ws-1',
+          document: currentDoc,
+          collaborative: true,
+          onSaveStateChange: (s) => {
+            latestSaveState = s;
+          },
+          onDocumentUpdated: (d) => {
+            updatedDocReceived = d;
+            currentDoc = d;
+            renderEditor();
+          },
+        })
+      );
+    };
 
-    // Verify doc-B remains completely unaffected
-    expect(docBTitle).toBe('Doc B Initial Title');
-    expect(docBToastError).toBeNull();
+    await act(async () => {
+      renderEditor();
+    });
+
+    const titleInput = container.querySelector('input') as HTMLInputElement;
+    expect(titleInput.value).toBe('Doc A Initial');
+
+    // 1. Edit Doc A title and advance debounce to trigger in-flight save
+    await act(async () => {
+      changeTitle(titleInput, 'Doc A In-Flight Title');
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(latestSaveState).toBe('saving');
+
+    // 2. Switch component to Doc B while Doc A save is still in flight
+    await act(async () => {
+      currentDoc = docB;
+      renderEditor();
+    });
+
+    expect(titleInput.value).toBe('Doc B Initial');
+    expect(latestSaveState).toBe('saved');
+
+    // 3. Reject Doc A's in-flight request
+    mockShowToast.mockClear();
+    await act(async () => {
+      deferredA.reject(new Error('Doc A Network Failure'));
+      await Promise.resolve();
+    });
+
+    // Verify Doc B is completely unaffected
+    expect(titleInput.value).toBe('Doc B Initial');
+    expect(latestSaveState).toBe('saved');
+    expect(mockShowToast).not.toHaveBeenCalled();
+    expect(updatedDocReceived).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it('13. Real title failure test: surfaces error toast, transitions save state to error, and preserves local title without fake saved state', async () => {
+    vi.useFakeTimers();
+
+    const doc: Document = {
+      id: 'doc-1',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Original Title',
+      content_text: '<p>Content</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const saveStatesRecorded: string[] = [];
+    vi.spyOn(api, 'updateDocument').mockRejectedValue(new Error('500 Database Error'));
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(DocumentEditor, {
+          workspaceId: 'ws-1',
+          document: doc,
+          collaborative: true,
+          onSaveStateChange: (s) => {
+            saveStatesRecorded.push(s);
+          },
+        })
+      );
+    });
+
+    const titleInput = container.querySelector('input') as HTMLInputElement;
+    expect(titleInput.value).toBe('Original Title');
+
+    mockShowToast.mockClear();
+
+    // Trigger title edit
+    await act(async () => {
+      changeTitle(titleInput, 'Unpersisted Title');
+    });
+
+    // Advance debounce
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    // Verify error surfaced to user via toast
+    expect(mockShowToast).toHaveBeenCalledWith('Failed to save document title', 'error');
+
+    // Verify save state transitioned to error
+    const finalSaveState = saveStatesRecorded[saveStatesRecorded.length - 1];
+    expect(finalSaveState).toBe('error');
+
+    // Verify no fake "saved" state was emitted after the error
+    const indexOfError = saveStatesRecorded.lastIndexOf('error');
+    const subsequentStates = saveStatesRecorded.slice(indexOfError + 1);
+    expect(subsequentStates).not.toContain('saved');
+
+    // Verify local title remains available in the input
+    expect(titleInput.value).toBe('Unpersisted Title');
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it('14. Real title success test: debounce fires, API called with correct payload, document updated, and saved state emitted', async () => {
+    vi.useFakeTimers();
+
+    const doc: Document = {
+      id: 'doc-1',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Initial Title',
+      content_text: '<p>Content</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const updatedServerDoc: Document = {
+      ...doc,
+      title: 'Persisted Successfully',
+      updated_at: new Date().toISOString(),
+    };
+
+    const updateSpy = vi.spyOn(api, 'updateDocument').mockResolvedValue({
+      document: updatedServerDoc,
+    });
+
+    let latestSaveState = '';
+    let updatedDocReceived: Document | null = null;
+    let currentDoc = doc;
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    const renderEditor = () => {
+      root.render(
+        React.createElement(DocumentEditor, {
+          workspaceId: 'ws-1',
+          document: currentDoc,
+          collaborative: true,
+          onSaveStateChange: (s) => {
+            latestSaveState = s;
+          },
+          onDocumentUpdated: (d) => {
+            updatedDocReceived = d;
+            currentDoc = d;
+            renderEditor();
+          },
+        })
+      );
+    };
+
+    await act(async () => {
+      renderEditor();
+    });
+
+    const titleInput = container.querySelector('input') as HTMLInputElement;
+
+    // Trigger title edit
+    await act(async () => {
+      changeTitle(titleInput, 'Persisted Successfully');
+    });
+
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Advance debounce
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    // Verify real API boundary called with exact parameters
+    expect(updateSpy).toHaveBeenCalledWith('ws-1', 'doc-1', {
+      title: 'Persisted Successfully',
+    });
+
+    // Verify component receives updated document
+    expect(updatedDocReceived).toEqual(updatedServerDoc);
+
+    // Verify save state is saved
+    expect(latestSaveState).toBe('saved');
+    expect(titleInput.value).toBe('Persisted Successfully');
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
   });
 });

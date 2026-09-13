@@ -36,6 +36,9 @@ export interface Room {
   lastActiveUserId?: string;
   isClosing?: boolean;
   docSeq: number;
+  lastPersistedSeq: number;
+  inFlightPersistence: Promise<void> | null;
+  queuedPersistenceSeq: number | null;
 }
 
 export function broadcastPersistence(
@@ -86,22 +89,64 @@ export function sendPersistence(
   }
 }
 
-export async function flushRoomPersistence(room: Room): Promise<void> {
+export function queueRoomPersistence(room: Room): Promise<void> {
   if (room.debounceTimer) {
     clearTimeout(room.debounceTimer);
     room.debounceTimer = null;
   }
+
+  const targetSeq = room.docSeq || 0;
+
+  // If already persisted up to or past targetSeq, and no in-flight persistence:
+  if (room.lastPersistedSeq >= targetSeq && !room.inFlightPersistence) {
+    broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, targetSeq);
+    return Promise.resolve();
+  }
+
+  // If another persistence operation is currently in-flight, serialize!
+  if (room.inFlightPersistence) {
+    room.queuedPersistenceSeq = Math.max(room.queuedPersistenceSeq || 0, targetSeq);
+    return room.inFlightPersistence.then(() => {
+      if ((room.lastPersistedSeq || 0) >= targetSeq) {
+        return;
+      }
+      return queueRoomPersistence(room);
+    });
+  }
+
   const seqToPersist = room.docSeq || 0;
   broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTING, seqToPersist);
-  try {
-    await persistRecoverySnapshot(room.documentId, room.doc);
-    broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
-  } catch (err) {
-    console.error(`[collab-server] Flush snapshot error for ${room.documentId}:`, err);
-    const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
-    broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
-    throw err;
-  }
+
+  const promise = (async () => {
+    try {
+      await persistRecoverySnapshot(room.documentId, room.doc);
+      room.lastPersistedSeq = Math.max(room.lastPersistedSeq, seqToPersist);
+      broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
+    } catch (err) {
+      console.error(`[collab-server] Snapshot error for ${room.documentId}:`, err);
+      const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
+      broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
+      throw err;
+    } finally {
+      room.inFlightPersistence = null;
+      if (room.queuedPersistenceSeq !== null && room.queuedPersistenceSeq !== undefined) {
+        const nextSeq = room.queuedPersistenceSeq;
+        room.queuedPersistenceSeq = null;
+        if (nextSeq > room.lastPersistedSeq) {
+          queueRoomPersistence(room).catch(() => {
+            // Already broadcast and logged
+          });
+        }
+      }
+    }
+  })();
+
+  room.inFlightPersistence = promise;
+  return promise;
+}
+
+export async function flushRoomPersistence(room: Room): Promise<void> {
+  return queueRoomPersistence(room);
 }
 
 const rooms = new Map<string, Room>();
@@ -127,6 +172,9 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
           connections,
           debounceTimer: null,
           docSeq: 0,
+          lastPersistedSeq: -1,
+          inFlightPersistence: null,
+          queuedPersistenceSeq: null,
         };
 
         const onDocUpdate = (update: Uint8Array, origin: unknown) => {
@@ -153,18 +201,11 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
           }
           const env = getEnv();
           const debounceMs = env.SNAPSHOT_DEBOUNCE_MS || 2000;
-          newRoom.debounceTimer = setTimeout(async () => {
+          newRoom.debounceTimer = setTimeout(() => {
             newRoom.debounceTimer = null;
-            const seqToPersist = newRoom.docSeq || 0;
-            broadcastPersistence(newRoom, PERSISTENCE_STATUS_PERSISTING, seqToPersist);
-            try {
-              await persistRecoverySnapshot(documentId, doc);
-              broadcastPersistence(newRoom, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
-            } catch (err) {
-              console.error(`[collab-server] Debounced snapshot error for ${documentId}:`, err);
-              const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
-              broadcastPersistence(newRoom, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
-            }
+            queueRoomPersistence(newRoom).catch(() => {
+              // Error already broadcast and logged
+            });
           }, debounceMs);
         };
 
@@ -206,6 +247,14 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
     room.debounceTimer = null;
   }
 
+  if (room.inFlightPersistence) {
+    try {
+      await room.inFlightPersistence;
+    } catch {
+      // Ignored during shutdown
+    }
+  }
+
   try {
     // 1. Persist final recovery snapshot
     await persistRecoverySnapshot(documentId, room.doc);
@@ -242,6 +291,8 @@ export function clearAllRooms(): void {
     if (room.unbindDocListener) {
       room.unbindDocListener();
     }
+    room.inFlightPersistence = null;
+    room.queuedPersistenceSeq = null;
     room.doc.destroy();
   }
   rooms.clear();

@@ -49,8 +49,10 @@ export class CollabProvider {
   private onError?: (error: Error) => void;
 
   private localEditRev = 0;
-  private inFlightEditRev = 0;
   private acknowledgedLocalRev = 0;
+  private seqToLocalRev = new Map<number, number>();
+  private latestPersistedSeq = 0;
+  private latestErrorSeq = 0;
 
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private currentBackoffMs: number;
@@ -109,6 +111,18 @@ export class CollabProvider {
 
   public get isDirty(): boolean {
     return this.localEditRev > this.acknowledgedLocalRev;
+  }
+
+  public getLocalEditRev(): number {
+    return this.localEditRev;
+  }
+
+  public getAcknowledgedLocalRev(): number {
+    return this.acknowledgedLocalRev;
+  }
+
+  public getLatestPersistedSeq(): number {
+    return this.latestPersistedSeq;
   }
 
   public requestPersistenceFlush(): void {
@@ -191,6 +205,7 @@ export class CollabProvider {
       this.reconnectTimeout = null;
     }
 
+    this.seqToLocalRev.clear();
     this.updateStatus('connecting');
 
     try {
@@ -277,16 +292,34 @@ export class CollabProvider {
             awarenessProtocol.applyAwarenessUpdate(this.awareness, awarenessUpdate, 'remote');
           } else if (messageType === MESSAGE_PERSISTENCE) {
             const status = decoding.readVarUint(decoder);
-            const _seq = decoding.readVarUint(decoder);
+            const seq = decoding.readVarUint(decoder);
 
             if (status === PERSISTENCE_STATUS_PERSISTING) {
-              this.inFlightEditRev = this.localEditRev;
+              // Map this exact sequence to the local edit revision that existed when this persistence operation started
+              this.seqToLocalRev.set(seq, this.localEditRev);
               this.updatePersistenceState('saving');
             } else if (status === PERSISTENCE_STATUS_PERSISTED) {
-              this.acknowledgedLocalRev = Math.max(this.acknowledgedLocalRev, this.inFlightEditRev);
+              // Retrieve the revision captured when sequence `seq` was initiated
+              const capturedRev = this.seqToLocalRev.get(seq) ?? this.acknowledgedLocalRev;
+              this.acknowledgedLocalRev = Math.max(this.acknowledgedLocalRev, capturedRev);
+              this.latestPersistedSeq = Math.max(this.latestPersistedSeq, seq);
+
+              // Clean up mapped sequences <= seq
+              const seqsToDelete: number[] = [];
+              this.seqToLocalRev.forEach((_rev, s) => {
+                if (s <= seq) {
+                  seqsToDelete.push(s);
+                }
+              });
+              for (let i = 0; i < seqsToDelete.length; i++) {
+                this.seqToLocalRev.delete(seqsToDelete[i]);
+              }
+
+              // Only transition to 'persisted' if all local edits up to the current revision have been acknowledged
               if (this.localEditRev <= this.acknowledgedLocalRev) {
                 this.updatePersistenceState('persisted');
               } else {
+                // Newer local edits occurred during or after this sequence; remain editing/dirty
                 this.updatePersistenceState('editing');
               }
             } else if (status === PERSISTENCE_STATUS_ERROR) {
@@ -298,7 +331,23 @@ export class CollabProvider {
               } catch {
                 // Ignore decoding error
               }
-              this.updatePersistenceState('error', { error: errorMsg });
+
+              this.seqToLocalRev.delete(seq);
+
+              // Stale error guard: an old failure must NOT overwrite a newer successful persistence state
+              // or overwrite an in-flight persistence operation for a newer revision.
+              const hasNewerPersisted = seq < this.latestPersistedSeq;
+              let hasNewerInFlight = false;
+              this.seqToLocalRev.forEach((_rev, s) => {
+                if (s > seq) {
+                  hasNewerInFlight = true;
+                }
+              });
+
+              if (!hasNewerPersisted && !hasNewerInFlight) {
+                this.latestErrorSeq = Math.max(this.latestErrorSeq, seq);
+                this.updatePersistenceState('error', { error: errorMsg });
+              }
             }
           }
         } catch (err) {
@@ -373,6 +422,9 @@ export class CollabProvider {
       this.ws = null;
     }
 
+    this.seqToLocalRev.clear();
+    this.latestPersistedSeq = 0;
+    this.latestErrorSeq = 0;
     this.updateStatus('disconnected');
   }
 }

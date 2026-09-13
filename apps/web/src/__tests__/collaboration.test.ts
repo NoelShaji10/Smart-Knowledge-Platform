@@ -415,6 +415,23 @@ describe('Phase 4 T3 & T4: Frontend Collaboration Provider & Awareness Integrati
   });
 
   describe('8. Phase 5 T3: Persistence and Save-State Truthfulness', () => {
+    const sendPersistencePacket = (
+      provider: CollabProvider,
+      status: number,
+      seq: number,
+      errorMessage?: string,
+    ) => {
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_PERSISTENCE);
+      encoding.writeVarUint(enc, status);
+      encoding.writeVarUint(enc, seq);
+      if (status === PERSISTENCE_STATUS_ERROR && errorMessage) {
+        encoding.writeVarString(enc, errorMessage);
+      }
+      // @ts-expect-error accessing private ws
+      provider.ws?.onmessage?.({ data: encoding.toUint8Array(enc).buffer });
+    };
+
     it('transitions to "editing" immediately upon local document edit', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -446,11 +463,11 @@ describe('Phase 4 T3 & T4: Frontend Collaboration Provider & Awareness Integrati
       doc.destroy();
     });
 
-    it('transitions through "saving" and "persisted" upon receiving MESSAGE_PERSISTENCE packets', async () => {
+    it('Test A: Sequential persistence: edit A -> persist A -> persisted A -> saved', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ ticket: 'test-ticket-ack' }),
+        json: () => Promise.resolve({ ticket: 'test-ticket-a' }),
       });
 
       const doc = new Y.Doc();
@@ -458,175 +475,381 @@ describe('Phase 4 T3 & T4: Frontend Collaboration Provider & Awareness Integrati
 
       const provider = new CollabProvider({
         workspaceId: 'ws-test',
-        documentId: 'doc-test',
+        documentId: 'doc-test-a',
         doc,
         onPersistenceChange: (st) => persistenceStates.push(st),
       });
 
       await new Promise((r) => setTimeout(r, 10));
 
-      // Make local edit
+      // 1. Edit A
       doc.getText('content').insert(0, 'A');
       expect(provider.persistenceState).toBe('editing');
+      expect(provider.isDirty).toBe(true);
+      expect(provider.getLocalEditRev()).toBe(1);
 
-      // Server sends PERSISTENCE_STATUS_PERSISTING
-      const encPersisting = encoding.createEncoder();
-      encoding.writeVarUint(encPersisting, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisting, PERSISTENCE_STATUS_PERSISTING);
-      encoding.writeVarUint(encPersisting, 1); // seq 1
-
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisting).buffer });
-
+      // 2. Persistence A starts (seq 1)
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
       expect(provider.persistenceState).toBe('saving');
+      expect(provider.isDirty).toBe(true);
 
-      // Server sends PERSISTENCE_STATUS_PERSISTED
-      const encPersisted = encoding.createEncoder();
-      encoding.writeVarUint(encPersisted, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisted, PERSISTENCE_STATUS_PERSISTED);
-      encoding.writeVarUint(encPersisted, 1); // seq 1
-
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisted).buffer });
-
+      // 3. Persisted A arrives (seq 1)
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 1);
       expect(provider.persistenceState).toBe('persisted');
       expect(provider.isDirty).toBe(false);
+      expect(provider.getAcknowledgedLocalRev()).toBe(1);
+      expect(provider.getLatestPersistedSeq()).toBe(1);
 
       provider.destroy();
       doc.destroy();
     });
 
-    it('monotonic revision guard: newer local edit while snapshot in-flight keeps state in "editing", never falsely "persisted"', async () => {
+    it('Test B: Edit during persistence: edit A -> persistence A starts -> edit B -> persisted A -> remains editing/dirty', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ ticket: 'test-ticket-race' }),
+        json: () => Promise.resolve({ ticket: 'test-ticket-b' }),
       });
 
       const doc = new Y.Doc();
       const provider = new CollabProvider({
         workspaceId: 'ws-test',
-        documentId: 'doc-test',
+        documentId: 'doc-test-b',
         doc,
       });
 
       await new Promise((r) => setTimeout(r, 10));
 
-      // 1. First local edit
+      // 1. Edit A
       doc.getText('content').insert(0, 'First Edit');
       expect(provider.persistenceState).toBe('editing');
+      expect(provider.getLocalEditRev()).toBe(1);
 
-      // 2. Server begins persisting snapshot 1
-      const encPersisting = encoding.createEncoder();
-      encoding.writeVarUint(encPersisting, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisting, PERSISTENCE_STATUS_PERSISTING);
-      encoding.writeVarUint(encPersisting, 1);
-
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisting).buffer });
+      // 2. Server begins persisting snapshot for seq 1
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
       expect(provider.persistenceState).toBe('saving');
 
-      // 3. User makes SECOND local edit while snapshot 1 is still in flight!
+      // 3. User makes SECOND local edit while snapshot 1 is still in flight
       doc.getText('content').insert(10, ' Second Edit');
       expect(provider.persistenceState).toBe('editing');
       expect(provider.isDirty).toBe(true);
+      expect(provider.getLocalEditRev()).toBe(2);
 
       // 4. Server finishes snapshot 1 and sends PERSISTENCE_STATUS_PERSISTED for seq 1
-      const encPersisted = encoding.createEncoder();
-      encoding.writeVarUint(encPersisted, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisted, PERSISTENCE_STATUS_PERSISTED);
-      encoding.writeVarUint(encPersisted, 1);
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 1);
 
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisted).buffer });
-
-      // Monotonic guard verifies localEditRev (2) > acknowledgedRev (1) -> NOT persisted!
+      // Sequence guard verifies localEditRev (2) > acknowledgedRev (1) -> NOT persisted!
       expect(provider.persistenceState).toBe('editing');
       expect(provider.isDirty).toBe(true);
+      expect(provider.getAcknowledgedLocalRev()).toBe(1);
 
-      // 5. Now server snapshots second edit
-      const encPersisting2 = encoding.createEncoder();
-      encoding.writeVarUint(encPersisting2, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisting2, PERSISTENCE_STATUS_PERSISTING);
-      encoding.writeVarUint(encPersisting2, 2);
-
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisting2).buffer });
+      // 5. Now server snapshots second edit (seq 2)
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 2);
       expect(provider.persistenceState).toBe('saving');
 
-      const encPersisted2 = encoding.createEncoder();
-      encoding.writeVarUint(encPersisted2, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encPersisted2, PERSISTENCE_STATUS_PERSISTED);
-      encoding.writeVarUint(encPersisted2, 2);
-
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encPersisted2).buffer });
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 2);
 
       // All local edits are now persisted
       expect(provider.persistenceState).toBe('persisted');
       expect(provider.isDirty).toBe(false);
+      expect(provider.getAcknowledgedLocalRev()).toBe(2);
+      expect(provider.getLatestPersistedSeq()).toBe(2);
 
       provider.destroy();
       doc.destroy();
     });
 
-    it('transitions to "error" on receiving PERSISTENCE_STATUS_ERROR packet', async () => {
+    it('Test C: Two persistence operations overlap: seq1 starts -> seq2 starts -> seq1 persisted -> seq2 persisted', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ ticket: 'test-ticket-err' }),
+        json: () => Promise.resolve({ ticket: 'test-ticket-c' }),
       });
 
       const doc = new Y.Doc();
       const provider = new CollabProvider({
         workspaceId: 'ws-test',
-        documentId: 'doc-test',
+        documentId: 'doc-test-c',
         doc,
       });
 
       await new Promise((r) => setTimeout(r, 10));
 
-      const encError = encoding.createEncoder();
-      encoding.writeVarUint(encError, MESSAGE_PERSISTENCE);
-      encoding.writeVarUint(encError, PERSISTENCE_STATUS_ERROR);
-      encoding.writeVarUint(encError, 5);
-      encoding.writeVarString(encError, 'PostgreSQL connection timeout');
+      // 1. Edit A (rev 1)
+      doc.getText('content').insert(0, 'A');
+      expect(provider.getLocalEditRev()).toBe(1);
 
-      // @ts-expect-error accessing private ws
-      provider.ws?.onmessage?.({ data: encoding.toUint8Array(encError).buffer });
+      // 2. seq 1 starts
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
+      expect(provider.persistenceState).toBe('saving');
 
+      // 3. Edit B (rev 2) while seq 1 in flight
+      doc.getText('content').insert(1, 'B');
+      expect(provider.getLocalEditRev()).toBe(2);
+      expect(provider.persistenceState).toBe('editing');
+
+      // 4. seq 2 starts before seq 1 finishes
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 2);
+      expect(provider.persistenceState).toBe('saving');
+
+      // 5. seq 1 finishes
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 1);
+      // seq 1 only acknowledged rev 1; local rev 2 is still dirty!
+      expect(provider.persistenceState).toBe('editing');
+      expect(provider.isDirty).toBe(true);
+      expect(provider.getAcknowledgedLocalRev()).toBe(1);
+
+      // 6. seq 2 finishes
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 2);
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+      expect(provider.getAcknowledgedLocalRev()).toBe(2);
+      expect(provider.getLatestPersistedSeq()).toBe(2);
+
+      provider.destroy();
+      doc.destroy();
+    });
+
+    it('Test D: Reverse completion: seq1 starts -> seq2 starts -> seq2 persisted -> seq1 persisted -> old seq1 does not regress state', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ticket: 'test-ticket-d' }),
+      });
+
+      const doc = new Y.Doc();
+      const provider = new CollabProvider({
+        workspaceId: 'ws-test',
+        documentId: 'doc-test-d',
+        doc,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // 1. Edit A (rev 1) -> seq 1 starts
+      doc.getText('content').insert(0, 'A');
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
+
+      // 2. Edit B (rev 2) -> seq 2 starts
+      doc.getText('content').insert(1, 'B');
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 2);
+
+      // 3. seq 2 arrives first (e.g. out-of-order network arrival)
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 2);
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+      expect(provider.getAcknowledgedLocalRev()).toBe(2);
+      expect(provider.getLatestPersistedSeq()).toBe(2);
+
+      // 4. Stale seq 1 arrives after seq 2
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 1);
+      // Must NOT regress state to editing, must NOT regress acknowledgedLocalRev to 1!
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+      expect(provider.getAcknowledgedLocalRev()).toBe(2);
+      expect(provider.getLatestPersistedSeq()).toBe(2);
+
+      provider.destroy();
+      doc.destroy();
+    });
+
+    it('Test E: Old error after newer success: seq1 starts -> seq2 succeeds -> seq1 errors -> does not end in error', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ticket: 'test-ticket-e' }),
+      });
+
+      const doc = new Y.Doc();
+      const provider = new CollabProvider({
+        workspaceId: 'ws-test',
+        documentId: 'doc-test-e',
+        doc,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // 1. Edit A -> seq 1 starts
+      doc.getText('content').insert(0, 'A');
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
+
+      // 2. Edit B -> seq 2 starts
+      doc.getText('content').insert(1, 'B');
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 2);
+
+      // 3. seq 2 succeeds
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 2);
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+
+      // 4. Stale seq 1 fails
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_ERROR, 1, 'Network timeout on stale seq 1');
+
+      // Stale seq 1 error must NOT overwrite the newer successful persistence state!
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+
+      provider.destroy();
+      doc.destroy();
+    });
+
+    it('Test F: Newest persistence failure: latest persistence fails -> explicit error and dirty changes remain', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ticket: 'test-ticket-f' }),
+      });
+
+      let errorDetails: { error?: string } | undefined;
+      const doc = new Y.Doc();
+      const provider = new CollabProvider({
+        workspaceId: 'ws-test',
+        documentId: 'doc-test-f',
+        doc,
+        onPersistenceChange: (_st, details) => {
+          errorDetails = details;
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // 1. User makes edit
+      doc.getText('content').insert(0, 'Failing edit');
+      expect(provider.persistenceState).toBe('editing');
+      expect(provider.isDirty).toBe(true);
+
+      // 2. Persistence begins
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
+      expect(provider.persistenceState).toBe('saving');
+
+      // 3. Persistence fails
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_ERROR, 1, 'PostgreSQL connection timeout');
+
+      // Provider surfaces error, preserves dirty state, and does NOT acknowledge revision
       expect(provider.persistenceState).toBe('error');
+      expect(provider.isDirty).toBe(true);
+      expect(provider.getAcknowledgedLocalRev()).toBe(0);
+      expect(errorDetails?.error).toContain('PostgreSQL connection timeout');
 
       provider.destroy();
       doc.destroy();
     });
 
-    it('requestPersistenceFlush sends MESSAGE_PERSISTENCE over active WebSocket', async () => {
+    it('Test G: Manual Ctrl+S / flushPersistence while debounced persistence is pending sends MESSAGE_PERSISTENCE with no false saved state', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ ticket: 'test-ticket-flush' }),
+        json: () => Promise.resolve({ ticket: 'test-ticket-g' }),
       });
 
       const doc = new Y.Doc();
       const provider = new CollabProvider({
         workspaceId: 'ws-test',
-        documentId: 'doc-test',
+        documentId: 'doc-test-g',
         doc,
       });
 
       await new Promise((r) => setTimeout(r, 10));
 
+      // User makes edit
+      doc.getText('content').insert(0, 'Manual save text');
+      expect(provider.persistenceState).toBe('editing');
+      expect(provider.isDirty).toBe(true);
+
+      // User triggers manual flush (e.g. Ctrl+S)
       provider.requestPersistenceFlush();
 
+      // Verify packet was sent over WebSocket
       // @ts-expect-error accessing private ws
       const sent = provider.ws?.sentMessages || [];
       expect(sent.length).toBeGreaterThan(0);
-
       const lastSent = sent[sent.length - 1];
       const dec = decoding.createDecoder(new Uint8Array(lastSent));
-      const msgType = decoding.readVarUint(dec);
-      expect(msgType).toBe(MESSAGE_PERSISTENCE);
+      expect(decoding.readVarUint(dec)).toBe(MESSAGE_PERSISTENCE);
+
+      // State must remain editing/dirty until server acknowledges, NOT falsely marked saved
+      expect(provider.persistenceState).toBe('editing');
+      expect(provider.isDirty).toBe(true);
+
+      // Server acknowledges flush
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 1);
+      expect(provider.persistenceState).toBe('saving');
+
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 1);
+      expect(provider.persistenceState).toBe('persisted');
+      expect(provider.isDirty).toBe(false);
+
+      provider.destroy();
+      doc.destroy();
+    });
+
+    it('Test H: Viewer sends/attempts persistence flush: server rejection handled gracefully without false saved state', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ticket: 'test-ticket-h' }),
+      });
+
+      const doc = new Y.Doc();
+      const provider = new CollabProvider({
+        workspaceId: 'ws-test',
+        documentId: 'doc-test-h',
+        doc,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Viewer triggers flush
+      provider.requestPersistenceFlush();
+
+      // Server rejects with PERSISTENCE_STATUS_ERROR
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_ERROR, 0, 'Permission denied: viewers cannot persist');
+
+      expect(provider.persistenceState).toBe('error');
+      expect(provider.getLatestPersistedSeq()).toBe(0);
+
+      provider.destroy();
+      doc.destroy();
+    });
+
+    it('Test I: Verify the actual sequence number is used by the client and not left unused', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ticket: 'test-ticket-i' }),
+      });
+
+      const doc = new Y.Doc();
+      const provider = new CollabProvider({
+        workspaceId: 'ws-test',
+        documentId: 'doc-test-i',
+        doc,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(provider.getLatestPersistedSeq()).toBe(0);
+
+      // Send PERSISTING with sequence 42
+      doc.getText('content').insert(0, 'Seq 42 content');
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTING, 42);
+
+      // Sequence has not persisted yet
+      expect(provider.getLatestPersistedSeq()).toBe(0);
+      expect(provider.persistenceState).toBe('saving');
+
+      // Send PERSISTED with sequence 42
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 42);
+
+      // Client MUST track the actual sequence number
+      expect(provider.getLatestPersistedSeq()).toBe(42);
+      expect(provider.getAcknowledgedLocalRev()).toBe(1);
+      expect(provider.persistenceState).toBe('persisted');
+
+      // Older sequence 10 arrives late
+      sendPersistencePacket(provider, PERSISTENCE_STATUS_PERSISTED, 10);
+      // Remains 42 (strictly monotonic, cannot regress)
+      expect(provider.getLatestPersistedSeq()).toBe(42);
 
       provider.destroy();
       doc.destroy();

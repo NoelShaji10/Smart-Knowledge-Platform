@@ -21,6 +21,7 @@ import {
   PERSISTENCE_STATUS_PERSISTED,
   PERSISTENCE_STATUS_PERSISTING,
   PERSISTENCE_STATUS_ERROR,
+  flushRoomPersistence,
 } from './room-manager';
 import * as storage from '@knowledge/storage';
 import * as snapshotService from './snapshot-service';
@@ -515,6 +516,139 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
       expect(errorMessages.length).toBeGreaterThan(0);
       expect(errorMessages[0]?.msg).toContain('Disk quota exceeded');
       vi.useRealTimers();
+    });
+
+    it('Test G: Manual flush while debounced persistence is pending cancels debounce and flushes immediately using same sequencing', async () => {
+      vi.useFakeTimers();
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000124');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-flush-pending',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-1',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000124',
+        canEdit: true,
+        effectiveRole: 'editor',
+      };
+      addConnectionToRoom(room, conn);
+
+      // Doc update triggers debounce timer (docSeq = 1)
+      room.doc.getText('content').insert(0, 'Debounced text');
+      expect(room.debounceTimer).not.toBeNull();
+      expect(room.docSeq).toBe(1);
+
+      // Client sends manual flush (e.g. Ctrl+S) BEFORE debounce fires
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_PERSISTENCE);
+      handleIncomingMessage(conn, room, Buffer.from(encoding.toUint8Array(enc)));
+
+      // Debounce timer should be cleared immediately
+      expect(room.debounceTimer).toBeNull();
+
+      // Wait a tick for async flush
+      await vi.advanceTimersByTimeAsync(10);
+
+      const packets = mockWs.sentData
+        .map((buf) => {
+          const dec = decoding.createDecoder(buf);
+          if (decoding.readVarUint(dec) === MESSAGE_PERSISTENCE) {
+            return {
+              status: decoding.readVarUint(dec),
+              seq: decoding.readVarUint(dec),
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+
+      expect(packets).toEqual([
+        { status: PERSISTENCE_STATUS_PERSISTING, seq: 1 },
+        { status: PERSISTENCE_STATUS_PERSISTED, seq: 1 },
+      ]);
+
+      vi.useRealTimers();
+    });
+
+    it('Test J: Serializes overlapping persistence operations per room and never broadcasts stale acknowledgements out-of-order', async () => {
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000125');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-serial-test',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-1',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000125',
+        canEdit: true,
+        effectiveRole: 'editor',
+      };
+      addConnectionToRoom(room, conn);
+
+      let resolveSnap1: () => void = () => {};
+      let resolveSnap2: () => void = () => {};
+      let snapCallCount = 0;
+
+      vi.spyOn(snapshotService, 'persistRecoverySnapshot').mockImplementation(async () => {
+        snapCallCount++;
+        const currentCount = snapCallCount;
+        return new Promise<void>((res) => {
+          if (currentCount === 1) {
+            resolveSnap1 = res;
+          } else {
+            resolveSnap2 = res;
+          }
+        });
+      });
+
+      // 1. Edit 1 (docSeq = 1)
+      room.doc.getText('content').insert(0, 'Edit 1');
+      const flush1Promise = flushRoomPersistence(room);
+
+      // Verify snap 1 started
+      expect(snapCallCount).toBe(1);
+      expect(room.inFlightPersistence).not.toBeNull();
+
+      // 2. Edit 2 (docSeq = 2) while snap 1 is in-flight!
+      room.doc.getText('content').insert(6, ' Edit 2');
+      const flush2Promise = flushRoomPersistence(room);
+
+      // Server must NOT run snap 2 concurrently; it queues it!
+      expect(snapCallCount).toBe(1);
+      expect(room.queuedPersistenceSeq).toBe(2);
+
+      // 3. Resolve snap 1
+      resolveSnap1();
+      await flush1Promise;
+
+      // Now snap 1 finished, server automatically starts queued snap 2!
+      await new Promise((r) => setTimeout(r, 10));
+      expect(snapCallCount).toBe(2);
+
+      // 4. Resolve snap 2
+      resolveSnap2();
+      await flush2Promise;
+
+      const packets = mockWs.sentData
+        .map((buf) => {
+          const dec = decoding.createDecoder(buf);
+          if (decoding.readVarUint(dec) === MESSAGE_PERSISTENCE) {
+            return {
+              status: decoding.readVarUint(dec),
+              seq: decoding.readVarUint(dec),
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+
+      // Strictly ordered monotonic sequence: PERSISTING(1) -> PERSISTED(1) -> PERSISTING(2) -> PERSISTED(2)
+      expect(packets).toEqual([
+        { status: PERSISTENCE_STATUS_PERSISTING, seq: 1 },
+        { status: PERSISTENCE_STATUS_PERSISTED, seq: 1 },
+        { status: PERSISTENCE_STATUS_PERSISTING, seq: 2 },
+        { status: PERSISTENCE_STATUS_PERSISTED, seq: 2 },
+      ]);
+      expect(room.lastPersistedSeq).toBe(2);
     });
   });
 });

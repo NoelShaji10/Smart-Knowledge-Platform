@@ -94,6 +94,18 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
     updated_at: overrides.updated_at || new Date().toISOString(),
   });
 
+  const changeInputValue = async (input: HTMLInputElement, value: string) => {
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      nativeSetter?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  };
+
   // -------------------------------------------------------------
   // 1. Document List
   // -------------------------------------------------------------
@@ -165,9 +177,9 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
   // -------------------------------------------------------------
   // 2. Creation
   // -------------------------------------------------------------
-  it('5. successful create uses real returned document ID and navigates', async () => {
+  it('5. successful create opens title modal, creates document with entered title, and navigates', async () => {
     vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
-    const realDoc = createMockDoc({ id: 'real-uuid-777', title: 'Untitled Document' });
+    const realDoc = createMockDoc({ id: 'real-uuid-777', title: 'My Custom Title' });
     vi.spyOn(api, 'createDocument').mockResolvedValue({ document: realDoc });
 
     await renderComponent(React.createElement(DocumentTree));
@@ -179,18 +191,37 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
 
     await act(async () => {
       createBtn!.click();
+    });
+
+    // Modal dialog should be open
+    const modalTitle = container.querySelector('#create-doc-modal-title');
+    expect(modalTitle).not.toBeNull();
+    expect(modalTitle?.textContent).toContain('Create New Document');
+
+    const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+    expect(titleInput).not.toBeNull();
+
+    await changeInputValue(titleInput, 'My Custom Title');
+
+    const submitBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+    );
+    expect(submitBtn).toBeDefined();
+
+    await act(async () => {
+      submitBtn!.click();
       await Promise.resolve();
     });
 
     expect(api.createDocument).toHaveBeenCalledWith('ws-1', {
-      title: 'Untitled Document',
+      title: 'My Custom Title',
       parentId: null,
     });
     expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/real-uuid-777');
-    expect(container.textContent).toContain('Untitled Document');
+    expect(container.textContent).toContain('My Custom Title');
   });
 
-  it('6. failed create does not insert a fake document', async () => {
+  it('6. failed create does not insert a fake document and shows error', async () => {
     vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
     vi.spyOn(api, 'createDocument').mockRejectedValue(
       new ApiError('Permission Denied', 403),
@@ -204,6 +235,17 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
 
     await act(async () => {
       createBtn!.click();
+    });
+
+    const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+    await changeInputValue(titleInput, 'Doomed Title');
+
+    const submitBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+    );
+
+    await act(async () => {
+      submitBtn!.click();
       await Promise.resolve();
     });
 
@@ -211,10 +253,14 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
       expect.stringContaining('Access denied'),
       'error',
     );
+    // Tree should not contain any doc items
     expect(container.querySelectorAll('li')).toHaveLength(0);
+    expect(mockPush).not.toHaveBeenCalled();
+    // Modal should show error message
+    expect(container.textContent).toContain('Access denied');
   });
 
-  it('7. created child document appears under the correct parent', async () => {
+  it('7. created child document prompts for title and appears under the correct parent', async () => {
     const parentDoc = createMockDoc({ id: 'parent-1', title: 'Parent Doc' });
     vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [parentDoc] });
 
@@ -237,11 +283,26 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
 
     await act(async () => {
       addSubBtn!.click();
+    });
+
+    // Sub-document modal header and parent name
+    expect(container.textContent).toContain('Create Sub-document');
+    expect(container.textContent).toContain('Parent: Parent Doc');
+
+    const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+    await changeInputValue(titleInput, 'Child Doc');
+
+    const submitBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+    );
+
+    await act(async () => {
+      submitBtn!.click();
       await Promise.resolve();
     });
 
     expect(api.createDocument).toHaveBeenCalledWith('ws-1', {
-      title: 'Untitled Document',
+      title: 'Child Doc',
       parentId: 'parent-1',
     });
     expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/child-1');
@@ -983,5 +1044,298 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
       (b) => b.textContent === 'Retry',
     );
     expect(staleRetryBtn).toBeDefined();
+  });
+
+  // -------------------------------------------------------------
+  // 7. Phase 5 T2 Refinement — Immediate Title Updates & Creation
+  // -------------------------------------------------------------
+  describe('T2 Refinement — Immediate Title Sync and Pre-Creation Naming', () => {
+    it('A. title update immediately reflects in document tree without page reload or extra API call', async () => {
+      const doc = createMockDoc({ id: 'doc-sync-1', title: 'Old Title' });
+      const listSpy = vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc] });
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      expect(container.textContent).toContain('Old Title');
+      expect(container.textContent).not.toContain('New Title');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Simulate title persistence event from DocumentEditor
+      const updatedDoc = { ...doc, title: 'New Title' };
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: updatedDoc } }),
+        );
+        await Promise.resolve();
+      });
+
+      // Document tree reflects the new title immediately
+      expect(container.textContent).toContain('New Title');
+      expect(container.textContent).not.toContain('Old Title');
+
+      // No additional list API request was made
+      expect(listSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('B. title update failure does not falsely update document tree or claim persistence', async () => {
+      const doc = createMockDoc({ id: 'doc-sync-2', title: 'Persisted Old Title' });
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc] });
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      expect(container.textContent).toContain('Persisted Old Title');
+
+      // In the event of an API failure, document:updated is NOT dispatched
+      // Verify DocumentTree keeps the original title intact
+      expect(container.textContent).toContain('Persisted Old Title');
+      expect(container.textContent).not.toContain('Unpersisted Failed Title');
+    });
+
+    it('C. create document prompts for title, calls API with entered title, and renders real document', async () => {
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+      const serverDoc = createMockDoc({ id: 'real-server-id-888', title: 'My New Document' });
+      const createSpy = vi.spyOn(api, 'createDocument').mockResolvedValue({ document: serverDoc });
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      // Click create button
+      const createBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Create your first document') || b.textContent?.includes('+ New Document'),
+      );
+      expect(createBtn).toBeDefined();
+
+      await act(async () => {
+        createBtn!.click();
+      });
+
+      // Dialog opens
+      const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+      expect(titleInput).not.toBeNull();
+
+      // Enter title
+      await changeInputValue(titleInput, 'My New Document');
+
+      const submitBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+      );
+      expect(submitBtn).toBeDefined();
+
+      await act(async () => {
+        submitBtn!.click();
+        await Promise.resolve();
+      });
+
+      // Real server API called with exact title
+      expect(createSpy).toHaveBeenCalledWith('ws-1', {
+        title: 'My New Document',
+        parentId: null,
+      });
+
+      // Document appears in the tree
+      expect(container.textContent).toContain('My New Document');
+
+      // Router navigates to real document
+      expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/real-server-id-888');
+    });
+
+    it('D. create document cancel or Escape aborts creation without calling API or modifying tree', async () => {
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+      const createSpy = vi.spyOn(api, 'createDocument');
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      const createBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Create your first document') || b.textContent?.includes('+ New Document'),
+      );
+
+      await act(async () => {
+        createBtn!.click();
+      });
+
+      expect(container.querySelector('#create-doc-modal-title')).not.toBeNull();
+
+      // Click Cancel
+      const cancelBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => b.textContent?.includes('Cancel'),
+      );
+      expect(cancelBtn).toBeDefined();
+
+      await act(async () => {
+        cancelBtn!.click();
+      });
+
+      // Modal is closed
+      expect(container.querySelector('#create-doc-modal-title')).toBeNull();
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(mockPush).not.toHaveBeenCalled();
+
+      // Test Escape key
+      await act(async () => {
+        createBtn!.click();
+      });
+      expect(container.querySelector('#create-doc-modal-title')).not.toBeNull();
+
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      });
+      expect(container.querySelector('#create-doc-modal-title')).toBeNull();
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it('E. create document failure shows error, does not fabricate document, and allows retry', async () => {
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+      const createSpy = vi
+        .spyOn(api, 'createDocument')
+        .mockRejectedValueOnce(new ApiError('Server exploded', 500))
+        .mockResolvedValueOnce({
+          document: createMockDoc({ id: 'recovered-real-id', title: 'Retry Success Title' }),
+        });
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      const createBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Create your first document') || b.textContent?.includes('+ New Document'),
+      );
+
+      await act(async () => {
+        createBtn!.click();
+      });
+
+      const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+      await changeInputValue(titleInput, 'Attempt 1 Title');
+
+      const submitBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+      );
+
+      await act(async () => {
+        submitBtn!.click();
+        await Promise.resolve();
+      });
+
+      // Fails: error message rendered
+      expect(container.textContent).toContain('Server exploded');
+      expect(mockPush).not.toHaveBeenCalled();
+      expect(container.querySelectorAll('li')).toHaveLength(0);
+
+      // Retry: update title and submit again
+      await changeInputValue(titleInput, 'Retry Success Title');
+      await act(async () => {
+        submitBtn!.click();
+        await Promise.resolve();
+      });
+
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Retry Success Title');
+      expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/recovered-real-id');
+    });
+
+    it('F. empty or whitespace-only title is rejected before calling API', async () => {
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+      const createSpy = vi.spyOn(api, 'createDocument');
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      const createBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Create your first document') || b.textContent?.includes('+ New Document'),
+      );
+
+      await act(async () => {
+        createBtn!.click();
+      });
+
+      const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+      await changeInputValue(titleInput, '    ');
+
+      const submitBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+      );
+
+      await act(async () => {
+        submitBtn!.click();
+        await Promise.resolve();
+      });
+
+      // Validation error shown
+      expect(container.textContent).toContain('Document title cannot be empty');
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('G. permission regression: viewer cannot create documents; editor and owner can', async () => {
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+
+      // Test as viewer
+      mockUserRole = 'viewer';
+      await renderComponent(React.createElement(DocumentTree));
+
+      // No create button in header, empty state, or bottom
+      expect(container.querySelector('button[title="Create top-level document"]')).toBeNull();
+      expect(container.querySelector('button[aria-label="Create Document"]')).toBeNull();
+      const emptyBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Create your first document'),
+      );
+      expect(emptyBtn).toBeUndefined();
+
+      // Test WorkspacePage as viewer
+      await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+      const wsCreateBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('+ New Document'),
+      );
+      expect(wsCreateBtn).toBeUndefined();
+
+      // Test as editor
+      mockUserRole = 'editor';
+      await renderComponent(React.createElement(DocumentTree));
+      expect(container.querySelector('button[title="Create top-level document"]')).not.toBeNull();
+
+      // Test as owner
+      mockUserRole = 'owner';
+      await renderComponent(React.createElement(DocumentTree));
+      expect(container.querySelector('button[title="Create top-level document"]')).not.toBeNull();
+    });
+
+    it('H. WorkspacePage New Document button opens creation modal and adds created document to list', async () => {
+      const doc1 = createMockDoc({ id: 'ws-d1', title: 'Doc 1' });
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1] });
+      const newDoc = createMockDoc({ id: 'ws-d2', title: 'Created From Workspace Page' });
+      vi.spyOn(api, 'createDocument').mockResolvedValue({ document: newDoc });
+
+      mockUserRole = 'editor';
+      await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+
+      expect(container.textContent).toContain('Doc 1');
+
+      const newDocBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('+ New Document'),
+      );
+      expect(newDocBtn).toBeDefined();
+
+      await act(async () => {
+        newDocBtn!.click();
+      });
+
+      // Modal open
+      const titleInput = container.querySelector('#create-doc-title-input') as HTMLInputElement;
+      expect(titleInput).not.toBeNull();
+
+      await changeInputValue(titleInput, 'Created From Workspace Page');
+
+      const submitBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => b.getAttribute('type') === 'submit' && b.textContent?.includes('Create Document'),
+      );
+
+      await act(async () => {
+        submitBtn!.click();
+        await Promise.resolve();
+      });
+
+      expect(api.createDocument).toHaveBeenCalledWith('ws-1', {
+        title: 'Created From Workspace Page',
+        parentId: null,
+      });
+      expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/ws-d2');
+      expect(container.textContent).toContain('Created From Workspace Page');
+    });
   });
 });

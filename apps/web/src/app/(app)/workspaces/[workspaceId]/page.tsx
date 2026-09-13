@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { api, Document, ApiError } from '@/lib/api';
 import { Button, Skeleton, useToast } from '@/components/ui';
+import { CreateDocumentModal } from '@/components/documents/CreateDocumentModal';
 import styles from './page.module.css';
 
 export default function WorkspacePage({ params }: { params?: { workspaceId?: string } }) {
@@ -18,7 +19,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   const [docsLoading, setDocsLoading] = useState(true);
   const [docsError, setDocsError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   const canCreate = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
   const isViewer = userRole === 'viewer';
@@ -68,8 +69,20 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   }, [workspaceId, fetchWorkspaceDocuments]);
 
   useEffect(() => {
-    function handleRefresh() {
-      fetchWorkspaceDocuments();
+    function handleRefresh(e: Event) {
+      const customEvt = e as CustomEvent<{ document: Document }>;
+      if (customEvt.detail?.document) {
+        const updated = customEvt.detail.document;
+        setDocuments((prev) => {
+          const exists = prev.some((d) => d.id === updated.id);
+          if (exists) {
+            return prev.map((d) => (d.id === updated.id ? updated : d));
+          }
+          return [updated, ...prev];
+        });
+      } else {
+        fetchWorkspaceDocuments();
+      }
     }
     window.addEventListener('document:updated', handleRefresh);
     window.addEventListener('workspace:refresh', handleRefresh);
@@ -78,28 +91,6 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
       window.removeEventListener('workspace:refresh', handleRefresh);
     };
   }, [fetchWorkspaceDocuments]);
-
-  const handleCreateDocument = async () => {
-    if (!workspaceId || !canCreate) return;
-    setCreating(true);
-    try {
-      const res = await api.createDocument(workspaceId, {
-        title: 'Untitled Document',
-      });
-      showToast('Document created', 'success');
-      router.push(`/workspaces/${workspaceId}/documents/${res.document.id}`);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        showToast('Access denied: You do not have permission to create documents', 'error');
-      } else if (err instanceof ApiError) {
-        showToast(err.message || 'Failed to create document', 'error');
-      } else {
-        showToast('Failed to create document', 'error');
-      }
-    } finally {
-      setCreating(false);
-    }
-  };
 
   if ((loading && !activeWorkspace) || (docsLoading && documents.length === 0 && !docsError)) {
     return (
@@ -175,11 +166,10 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
           <div className={styles.actions}>
             <Button
               variant="primary"
-              onClick={handleCreateDocument}
-              disabled={creating}
+              onClick={() => setIsCreateModalOpen(true)}
               aria-label="Create New Document"
             >
-              {creating ? 'Creating...' : '+ New Document'}
+              + New Document
             </Button>
           </div>
         )}
@@ -203,6 +193,20 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
               ))}
             </ul>
           </div>
+        )}
+
+        {isCreateModalOpen && workspaceId && (
+          <CreateDocumentModal
+            workspaceId={workspaceId}
+            isOpen={isCreateModalOpen}
+            onClose={() => setIsCreateModalOpen(false)}
+            onCreated={(newDoc) => {
+              setDocuments((prev) => {
+                if (prev.some((d) => d.id === newDoc.id)) return prev;
+                return [newDoc, ...prev];
+              });
+            }}
+          />
         )}
       </div>
     </div>

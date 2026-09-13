@@ -7,6 +7,7 @@ import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { api, Document, ApiError } from '@/lib/api';
 import { Skeleton, Button, Dropdown, DropdownItem, useToast } from '@/components/ui';
 import { MoveDocumentModal } from './MoveDocumentModal';
+import { CreateDocumentModal } from './CreateDocumentModal';
 import styles from './DocumentTree.module.css';
 
 interface TreeNodeProps {
@@ -235,7 +236,16 @@ export function DocumentTree() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+
+  // Create document modal state
+  const [createModal, setCreateModal] = useState<{
+    isOpen: boolean;
+    parentId: string | null;
+    parentTitle?: string | null;
+  }>({
+    isOpen: false,
+    parentId: null,
+  });
 
   // Expansion state
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
@@ -335,33 +345,24 @@ export function DocumentTree() {
     });
   };
 
-  const handleCreateDocument = async (parentId: string | null = null) => {
+  const openCreateModal = (parentId: string | null = null) => {
     if (!activeWorkspace || !canManage) return;
-    setCreating(true);
-    try {
-      const res = await api.createDocument(activeWorkspace.id, {
-        title: 'Untitled Document',
-        parentId,
-      });
+    const parentDoc = parentId ? documents.find((d) => d.id === parentId) : null;
+    setCreateModal({
+      isOpen: true,
+      parentId,
+      parentTitle: parentDoc?.title,
+    });
+  };
 
-      setDocuments((prev) => [...prev, res.document]);
-
-      if (parentId) {
-        setExpandedNodeIds((prev) => new Set(prev).add(parentId));
-      }
-
-      showToast('Document created', 'success');
-      router.push(`/workspaces/${activeWorkspace.id}/documents/${res.document.id}`);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        showToast('Access denied: You do not have permission to create documents in this workspace', 'error');
-      } else if (err instanceof ApiError) {
-        showToast(err.message || 'Failed to create document', 'error');
-      } else {
-        showToast('Failed to create document', 'error');
-      }
-    } finally {
-      setCreating(false);
+  const handleDocumentCreated = (newDoc: Document) => {
+    setDocuments((prev) => {
+      const exists = prev.some((d) => d.id === newDoc.id);
+      if (exists) return prev;
+      return [...prev, newDoc];
+    });
+    if (newDoc.parent_id) {
+      setExpandedNodeIds((prev) => new Set(prev).add(newDoc.parent_id!));
     }
   };
 
@@ -507,8 +508,7 @@ export function DocumentTree() {
             <button
               type="button"
               className={styles.addBtn}
-              onClick={() => handleCreateDocument(null)}
-              disabled={creating}
+              onClick={() => openCreateModal(null)}
               title="Create top-level document"
               aria-label="Create top-level document"
             >
@@ -545,8 +545,7 @@ export function DocumentTree() {
               variant="secondary"
               size="sm"
               className={styles.emptyCtaBtn}
-              onClick={() => handleCreateDocument(null)}
-              disabled={creating}
+              onClick={() => openCreateModal(null)}
             >
               + Create your first document
             </Button>
@@ -585,7 +584,7 @@ export function DocumentTree() {
                   currentDocId={currentDocId}
                   expandedNodeIds={expandedNodeIds}
                   onToggleExpand={toggleExpand}
-                  onAddSubDocument={(parentId) => handleCreateDocument(parentId)}
+                  onAddSubDocument={(parentId) => openCreateModal(parentId)}
                   onStartRename={handleStartRename}
                   onStartMove={(d) => setMovingDoc(d)}
                   onArchive={handleArchive}
@@ -606,15 +605,14 @@ export function DocumentTree() {
             <button
               type="button"
               className={styles.newDocBtn}
-              onClick={() => handleCreateDocument(null)}
-              disabled={creating}
+              onClick={() => openCreateModal(null)}
               aria-label="Create Document"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
-              <span>{creating ? 'Creating...' : '+ New Document'}</span>
+              <span>+ New Document</span>
             </button>
           )}
         </>
@@ -681,6 +679,18 @@ export function DocumentTree() {
             </ul>
           )}
         </div>
+      )}
+
+      {/* Create Document Modal */}
+      {createModal.isOpen && activeWorkspace && (
+        <CreateDocumentModal
+          workspaceId={activeWorkspace.id}
+          parentId={createModal.parentId}
+          parentTitle={createModal.parentTitle}
+          isOpen={createModal.isOpen}
+          onClose={() => setCreateModal({ isOpen: false, parentId: null })}
+          onCreated={handleDocumentCreated}
+        />
       )}
 
       {/* Move Document Modal */}

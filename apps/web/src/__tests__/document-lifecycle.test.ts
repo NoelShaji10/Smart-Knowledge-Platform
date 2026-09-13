@@ -672,4 +672,72 @@ describe('Phase 5 T1 — Real DocumentEditor Collaborative Title Persistence Tes
     container.remove();
     vi.useRealTimers();
   });
+
+  it('15. Collaborative title persistence dispatches document:updated window event for DocumentTree synchronization', async () => {
+    vi.useFakeTimers();
+
+    const doc: Document = {
+      id: 'doc-sync-42',
+      workspace_id: 'ws-1',
+      parent_id: null,
+      title: 'Initial Title',
+      content_text: '<p>Content</p>',
+      created_by: 'u1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const updatedServerDoc: Document = {
+      ...doc,
+      title: 'Synchronized Title Across Tree',
+      updated_at: new Date().toISOString(),
+    };
+
+    vi.spyOn(api, 'updateDocument').mockResolvedValue({
+      document: updatedServerDoc,
+    });
+
+    const eventsReceived: any[] = [];
+    const handleDocUpdated = (e: Event) => {
+      const customEvt = e as CustomEvent<{ document: Document }>;
+      eventsReceived.push(customEvt.detail?.document);
+    };
+    window.addEventListener('document:updated', handleDocUpdated);
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(DocumentEditor, {
+          workspaceId: 'ws-1',
+          document: doc,
+          collaborative: true,
+        })
+      );
+    });
+
+    const titleInput = container.querySelector('input') as HTMLInputElement;
+
+    await act(async () => {
+      changeTitle(titleInput, 'Synchronized Title Across Tree');
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(eventsReceived).toHaveLength(1);
+    expect(eventsReceived[0].title).toBe('Synchronized Title Across Tree');
+    expect(eventsReceived[0].id).toBe('doc-sync-42');
+
+    window.removeEventListener('document:updated', handleDocUpdated);
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+  });
 });

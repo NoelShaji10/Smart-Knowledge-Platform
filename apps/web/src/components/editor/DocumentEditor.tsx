@@ -78,6 +78,12 @@ export function DocumentEditor({
         contentText: newContent,
       });
 
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: res.document } }),
+        );
+      }
+
       if (onDocumentUpdated) {
         onDocumentUpdated(res.document);
       }
@@ -106,6 +112,11 @@ export function DocumentEditor({
             await executeTitleSave(nextPending);
           } else {
             setCollabTitleSaveState('saved');
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(
+                new CustomEvent('document:updated', { detail: { document: res.document } }),
+              );
+            }
             if (onDocumentUpdated) {
               onDocumentUpdated(res.document);
             }

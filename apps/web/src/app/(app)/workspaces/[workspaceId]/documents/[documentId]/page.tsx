@@ -82,6 +82,11 @@ export default function DocumentPage({
 
   const handleDocumentUpdated = (updated: Document) => {
     setDocument(updated);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('document:updated', { detail: { document: updated } }),
+      );
+    }
   };
 
   if (loading) {

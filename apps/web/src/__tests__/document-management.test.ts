@@ -1337,5 +1337,161 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
       expect(mockPush).toHaveBeenCalledWith('/workspaces/ws-1/documents/ws-d2');
       expect(container.textContent).toContain('Created From Workspace Page');
     });
+
+    it('I. DocumentTree ignores document:updated events from other workspaces and processes only matching active workspace', async () => {
+      const docA = createMockDoc({
+        id: 'doc-ws1-1',
+        workspace_id: 'ws-1',
+        title: 'Workspace A Original Title',
+      });
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [docA] });
+
+      await renderComponent(React.createElement(DocumentTree));
+
+      expect(container.textContent).toContain('Workspace A Original Title');
+
+      // 1. Dispatch event for a document from Workspace B (foreign workspace)
+      const foreignDoc = createMockDoc({
+        id: 'doc-ws2-1',
+        workspace_id: 'ws-2',
+        title: 'Workspace B Injected Title',
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: foreignDoc } }),
+        );
+        await Promise.resolve();
+      });
+
+      // Tree must NOT change or accept foreign workspace document
+      expect(container.textContent).toContain('Workspace A Original Title');
+      expect(container.textContent).not.toContain('Workspace B Injected Title');
+
+      // Also verify foreign event attempting to update an existing ID with a foreign workspace_id is rejected
+      const spoofedDoc = {
+        ...docA,
+        workspace_id: 'ws-2',
+        title: 'Spoofed Foreign Title',
+      };
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: spoofedDoc } }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain('Workspace A Original Title');
+      expect(container.textContent).not.toContain('Spoofed Foreign Title');
+
+      // 2. Positive case: Dispatch event for active workspace (ws-1)
+      const validUpdatedDoc = {
+        ...docA,
+        title: 'Workspace A Updated Title',
+      };
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: validUpdatedDoc } }),
+        );
+        await Promise.resolve();
+      });
+
+      // Tree updates immediately
+      expect(container.textContent).toContain('Workspace A Updated Title');
+      expect(container.textContent).not.toContain('Workspace A Original Title');
+    });
+
+    it('J. workspace switching cleans up previous workspace listener and accepts new workspace updates', async () => {
+      // Start in Workspace 1
+      const docA = createMockDoc({
+        id: 'doc-ws1-1',
+        workspace_id: 'ws-1',
+        title: 'Workspace 1 Document',
+      });
+      const listSpy = vi.spyOn(api, 'listDocuments').mockResolvedValueOnce({ documents: [docA] });
+
+      await renderComponent(React.createElement(DocumentTree));
+      expect(container.textContent).toContain('Workspace 1 Document');
+
+      // Switch active workspace to Workspace 2
+      const docB = createMockDoc({
+        id: 'doc-ws2-1',
+        workspace_id: 'ws-2',
+        title: 'Workspace 2 Document',
+      });
+      listSpy.mockResolvedValueOnce({ documents: [docB] });
+
+      mockActiveWorkspace = { id: 'ws-2', name: 'Second Workspace', slug: 'second-ws' };
+      mockCurrentPath = '/workspaces/ws-2';
+
+      await renderComponent(React.createElement(DocumentTree));
+      expect(container.textContent).toContain('Workspace 2 Document');
+      expect(container.textContent).not.toContain('Workspace 1 Document');
+
+      // Event for old Workspace 1 is ignored by the new listener
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', {
+            detail: { document: { ...docA, title: 'Old WS1 Changed' } },
+          }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain('Workspace 2 Document');
+      expect(container.textContent).not.toContain('Old WS1 Changed');
+
+      // Event for active Workspace 2 is accepted
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', {
+            detail: { document: { ...docB, title: 'Workspace 2 Renamed' } },
+          }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain('Workspace 2 Renamed');
+      expect(container.textContent).not.toContain('Workspace 2 Document');
+    });
+
+    it('K. WorkspacePage isolates document:updated events by workspace_id', async () => {
+      const docA = createMockDoc({ id: 'ws-d1', workspace_id: 'ws-1', title: 'Alpha Original Title' });
+      vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [docA] });
+
+      await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+      expect(container.textContent).toContain('Alpha Original Title');
+
+      // Event from foreign workspace ws-2 must be ignored
+      const foreignDoc = createMockDoc({
+        id: 'foreign-doc-99',
+        workspace_id: 'ws-2',
+        title: 'Foreign Workspace Document',
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: foreignDoc } }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).not.toContain('Foreign Workspace Document');
+      expect(container.textContent).toContain('Alpha Original Title');
+
+      // Event from matching workspace ws-1 updates local list
+      const updatedDocA = { ...docA, title: 'Beta Replaced Title' };
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('document:updated', { detail: { document: updatedDocA } }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain('Beta Replaced Title');
+      expect(container.textContent).not.toContain('Alpha Original Title');
+    });
   });
 });

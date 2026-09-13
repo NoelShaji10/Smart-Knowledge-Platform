@@ -73,6 +73,11 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
       const customEvt = e as CustomEvent<{ document: Document }>;
       if (customEvt.detail?.document) {
         const updated = customEvt.detail.document;
+        // Verify the document belongs to the currently active workspace
+        if (workspaceId && updated.workspace_id !== workspaceId) {
+          return;
+        }
+
         setDocuments((prev) => {
           const exists = prev.some((d) => d.id === updated.id);
           if (exists) {
@@ -90,7 +95,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
       window.removeEventListener('document:updated', handleRefresh);
       window.removeEventListener('workspace:refresh', handleRefresh);
     };
-  }, [fetchWorkspaceDocuments]);
+  }, [fetchWorkspaceDocuments, workspaceId]);
 
   if ((loading && !activeWorkspace) || (docsLoading && documents.length === 0 && !docsError)) {
     return (

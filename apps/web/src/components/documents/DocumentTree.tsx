@@ -315,10 +315,18 @@ export function DocumentTree() {
 
   // Synchronize externally triggered document updates (e.g. from DocumentEditor or DocumentHeader)
   useEffect(() => {
+    if (!activeWorkspace) return;
+    const currentWorkspaceId = activeWorkspace.id;
+
     function handleDocUpdated(e: Event) {
       const customEvt = e as CustomEvent<{ document: Document }>;
       if (customEvt.detail?.document) {
         const updated = customEvt.detail.document;
+        // Verify the document belongs to the currently active workspace
+        if (updated.workspace_id !== currentWorkspaceId) {
+          return;
+        }
+
         setDocuments((prev) => {
           const exists = prev.some((d) => d.id === updated.id);
           if (exists) {
@@ -331,7 +339,7 @@ export function DocumentTree() {
 
     window.addEventListener('document:updated', handleDocUpdated);
     return () => window.removeEventListener('document:updated', handleDocUpdated);
-  }, []);
+  }, [activeWorkspace?.id]);
 
   const toggleExpand = (docId: string) => {
     setExpandedNodeIds((prev) => {

@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api, ApiError, Document, setAccessToken } from '../lib/api';
 import { DocumentTree } from '../components/documents/DocumentTree';
 import { MoveDocumentModal } from '../components/documents/MoveDocumentModal';
+import WorkspacePage from '../app/(app)/workspaces/[workspaceId]/page';
 
 // Configure act environment for React 18
 // @ts-expect-error global IS_REACT_ACT_ENVIRONMENT
@@ -558,6 +559,7 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
   // 5. Archive & Restore
   // -------------------------------------------------------------
   it('15. successful archive updates document tree and moves document to archived list', async () => {
+    mockUserRole = 'admin';
     const doc1 = createMockDoc({ id: 'doc-active', title: 'Active Doc to Archive', is_archived: false });
     vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1] });
     vi.spyOn(api, 'archiveDocument').mockResolvedValue({
@@ -590,6 +592,7 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
   });
 
   it('16. archive failure preserves prior active state', async () => {
+    mockUserRole = 'admin';
     const doc1 = createMockDoc({ id: 'doc-stay-active', title: 'Active Document Keep', is_archived: false });
     vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1] });
     vi.spyOn(api, 'archiveDocument').mockRejectedValue(new Error('Archive DB failed'));
@@ -618,6 +621,7 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
   });
 
   it('17. successful restore returns document to active tree', async () => {
+    mockUserRole = 'admin';
     const archivedDoc = createMockDoc({
       id: 'doc-archived-1',
       title: 'Restorable Doc',
@@ -661,6 +665,7 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
   });
 
   it('18. restore failure preserves document in archived state', async () => {
+    mockUserRole = 'admin';
     const archivedDoc = createMockDoc({
       id: 'doc-archived-err',
       title: 'Failed Restore Doc',
@@ -771,15 +776,212 @@ describe('Phase 5 T2 — Real Document Management UX Tests', () => {
     expect(restoreBtn).toBeNull();
   });
 
-  it('22. management controls respect editor role and permit all operations', async () => {
+  it('22. editor can create, add sub-document, rename, and move, but cannot archive or restore', async () => {
     mockUserRole = 'editor';
     const doc1 = createMockDoc({ id: 'd-edit', title: 'Editable Doc' });
-    vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1] });
+    const archivedDoc = createMockDoc({ id: 'd-arch-edit', title: 'Archived Doc', is_archived: true });
+    vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1, archivedDoc] });
 
     await renderComponent(React.createElement(DocumentTree));
 
+    // Editor can create top-level and sub-documents
     expect(container.querySelector('button[aria-label="Create top-level document"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Add sub-document"]')).not.toBeNull();
-    expect(container.querySelector('button[aria-label="More actions"]')).not.toBeNull();
+
+    // Editor can open More actions dropdown
+    const moreBtn = container.querySelector('button[aria-label="More actions"]') as HTMLButtonElement;
+    expect(moreBtn).not.toBeNull();
+
+    await act(async () => {
+      moreBtn.click();
+    });
+
+    // Rename and Move are present
+    const menuButtons = Array.from(container.querySelectorAll('button'));
+    expect(menuButtons.some((b) => b.textContent === 'Rename')).toBe(true);
+    expect(menuButtons.some((b) => b.textContent === 'Move to...')).toBe(true);
+    expect(menuButtons.some((b) => b.textContent === 'Add sub-document')).toBe(true);
+
+    // Archive is strictly NOT present for editor
+    expect(menuButtons.some((b) => b.textContent === 'Archive')).toBe(false);
+
+    // Expand archived list
+    const archivedToggle = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-label') === 'Toggle archived documents',
+    );
+    await act(async () => {
+      archivedToggle!.click();
+    });
+
+    // In archived section, restore button must not be rendered for editor
+    const restoreBtn = container.querySelector('button[aria-label*="Restore"]');
+    expect(restoreBtn).toBeNull();
+  });
+
+  it('23. admin/owner role can archive active documents and restore archived documents', async () => {
+    mockUserRole = 'admin';
+    const doc1 = createMockDoc({ id: 'd-admin', title: 'Admin Controlled Doc' });
+    const archivedDoc = createMockDoc({ id: 'd-arch-admin', title: 'Archived For Admin', is_archived: true });
+    vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [doc1, archivedDoc] });
+
+    await renderComponent(React.createElement(DocumentTree));
+
+    const moreBtn = container.querySelector('button[aria-label="More actions"]') as HTMLButtonElement;
+    await act(async () => {
+      moreBtn.click();
+    });
+
+    // Archive is present for admin
+    const menuButtons = Array.from(container.querySelectorAll('button'));
+    expect(menuButtons.some((b) => b.textContent === 'Archive')).toBe(true);
+
+    // Expand archived list
+    const archivedToggle = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-label') === 'Toggle archived documents',
+    );
+    await act(async () => {
+      archivedToggle!.click();
+    });
+
+    // Restore is present for admin
+    const restoreBtn = container.querySelector('button[aria-label*="Restore"]');
+    expect(restoreBtn).not.toBeNull();
+  });
+
+  it('24. active child of archived or missing parent remains visible and accessible in active tree', async () => {
+    const parentA = createMockDoc({ id: 'parent-a', title: 'Archived Parent A', is_archived: true });
+    const childB = createMockDoc({ id: 'child-b', title: 'Active Child B', parent_id: 'parent-a', is_archived: false });
+    const grandchildC = createMockDoc({ id: 'child-c', title: 'Active Grandchild C', parent_id: 'child-b', is_archived: false });
+    const missingParentChild = createMockDoc({ id: 'orphan-d', title: 'Active Orphan D', parent_id: 'non-existent-uuid', is_archived: false });
+
+    vi.spyOn(api, 'listDocuments').mockResolvedValue({
+      documents: [parentA, childB, grandchildC, missingParentChild],
+    });
+
+    await renderComponent(React.createElement(DocumentTree));
+
+    // Active Child B must be visible in active tree (not lost)
+    expect(container.textContent).toContain('Active Child B');
+    // Active Orphan D must be visible in active tree
+    expect(container.textContent).toContain('Active Orphan D');
+
+    // Neither child B nor orphan D should be counted as archived
+    expect(container.textContent).toContain('Archived (1)');
+
+    // Child B is auto-expanded, so its child C is reachable and visible
+    expect(container.textContent).toContain('Active Grandchild C');
+    const collapseBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-label') === 'Collapse sub-documents',
+    );
+    expect(collapseBtn).toBeDefined();
+  });
+
+  it('25. DocumentTree refresh failure preserves existing documents and shows explicit notice with retry', async () => {
+    const doc1 = createMockDoc({ id: 'doc-loaded', title: 'Previously Loaded Document' });
+    const listSpy = vi.spyOn(api, 'listDocuments').mockResolvedValueOnce({ documents: [doc1] });
+
+    await renderComponent(React.createElement(DocumentTree));
+
+    expect(container.textContent).toContain('Previously Loaded Document');
+
+    // Subsequent refresh failure
+    listSpy.mockRejectedValueOnce(new Error('Network disconnected on refresh'));
+
+    // Trigger workspace re-fetch
+    mockActiveWorkspace = { id: 'ws-1', name: 'Updated Workspace', slug: 'test-ws' };
+    await renderComponent(React.createElement(DocumentTree));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Previous document remains visible
+    expect(container.textContent).toContain('Previously Loaded Document');
+
+    // Notice banner is displayed
+    expect(container.textContent).toContain('Could not refresh documents. Your last loaded data is still shown.');
+
+    // Retry button exists
+    const retryBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Retry',
+    );
+    expect(retryBtn).toBeDefined();
+  });
+
+  it('26. WorkspacePage initial document list failure renders explicit error state rather than empty workspace', async () => {
+    vi.spyOn(api, 'listDocuments').mockRejectedValue(new Error('500 Database down'));
+
+    await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+
+    // Must show explicit error state
+    expect(container.textContent).toContain('Failed to Load Documents');
+    expect(container.textContent).toContain('500 Database down');
+
+    // Must NOT show empty workspace CTA
+    expect(container.textContent).not.toContain('Your workspace is ready');
+    expect(container.textContent).not.toContain('Create your first document to start writing');
+
+    // Must have a Retry button
+    const retryBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Retry',
+    );
+    expect(retryBtn).toBeDefined();
+  });
+
+  it('27. WorkspacePage retry after initial failure recovers and renders documents', async () => {
+    const listSpy = vi.spyOn(api, 'listDocuments').mockRejectedValueOnce(new Error('Initial timeout'));
+
+    await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+
+    expect(container.textContent).toContain('Failed to Load Documents');
+    const retryBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Retry',
+    );
+    expect(retryBtn).toBeDefined();
+
+    // Mock successful response on retry
+    const doc1 = createMockDoc({ id: 'ws-doc-1', title: 'Recovered Document' });
+    listSpy.mockResolvedValueOnce({ documents: [doc1] });
+
+    await act(async () => {
+      retryBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('Failed to Load Documents');
+    expect(container.textContent).toContain('Recovered Document');
+  });
+
+  it('28. WorkspacePage refresh failure preserves existing documents and shows stale banner', async () => {
+    const doc1 = createMockDoc({ id: 'ws-doc-1', title: 'Existing Document 1' });
+    const listSpy = vi.spyOn(api, 'listDocuments').mockResolvedValueOnce({ documents: [doc1] });
+
+    await renderComponent(React.createElement(WorkspacePage, { params: { workspaceId: 'ws-1' } }));
+
+    expect(container.textContent).toContain('Existing Document 1');
+
+    // Now mock failure on refresh
+    listSpy.mockRejectedValueOnce(new Error('Refresh connection failed'));
+
+    // Trigger re-fetch via workspace:refresh event
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('workspace:refresh'));
+      await Promise.resolve();
+    });
+
+    // Existing document must still be preserved
+    expect(container.textContent).toContain('Existing Document 1');
+
+    // Stale banner must be shown
+    expect(container.textContent).toContain('Could not refresh documents. Your last loaded data is still shown');
+
+    // Empty workspace CTA must NOT be shown
+    expect(container.textContent).not.toContain('Your workspace is ready');
+
+    // Retry button must be present in the stale banner
+    const staleRetryBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Retry',
+    );
+    expect(staleRetryBtn).toBeDefined();
   });
 });

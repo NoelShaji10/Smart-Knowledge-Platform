@@ -15,9 +15,12 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   const workspaceId = params?.workspaceId;
 
   const [documents, setDocuments] = useState<Document[]>([]);
-  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsLoading, setDocsLoading] = useState(true);
+  const [docsError, setDocsError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
+  const canCreate = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
   const isViewer = userRole === 'viewer';
 
   useEffect(() => {
@@ -32,12 +35,31 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
     try {
       const res = await api.listDocuments(workspaceId, { includeArchived: false });
       setDocuments(res.documents);
-    } catch {
-      setDocuments([]);
+      setDocsError(null);
+      setRefreshError(null);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError && err.status === 0
+          ? 'Unable to connect to server. Offline.'
+          : err instanceof ApiError
+          ? err.message || 'Failed to load documents'
+          : err instanceof Error
+          ? err.message
+          : 'Failed to load documents';
+
+      setDocuments((prev) => {
+        if (prev.length > 0) {
+          setRefreshError(msg);
+        } else {
+          setDocsError(msg);
+        }
+        return prev;
+      });
+      showToast(msg, 'error');
     } finally {
       setDocsLoading(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, showToast]);
 
   useEffect(() => {
     if (workspaceId) {
@@ -45,8 +67,20 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
     }
   }, [workspaceId, fetchWorkspaceDocuments]);
 
+  useEffect(() => {
+    function handleRefresh() {
+      fetchWorkspaceDocuments();
+    }
+    window.addEventListener('document:updated', handleRefresh);
+    window.addEventListener('workspace:refresh', handleRefresh);
+    return () => {
+      window.removeEventListener('document:updated', handleRefresh);
+      window.removeEventListener('workspace:refresh', handleRefresh);
+    };
+  }, [fetchWorkspaceDocuments]);
+
   const handleCreateDocument = async () => {
-    if (!workspaceId || isViewer) return;
+    if (!workspaceId || !canCreate) return;
     setCreating(true);
     try {
       const res = await api.createDocument(workspaceId, {
@@ -67,7 +101,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
     }
   };
 
-  if (loading && !activeWorkspace) {
+  if ((loading && !activeWorkspace) || (docsLoading && documents.length === 0 && !docsError)) {
     return (
       <div className={styles.container}>
         <div className={styles.content}>
@@ -96,11 +130,36 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
     );
   }
 
+  if (docsError && documents.length === 0) {
+    return (
+      <div className={styles.container}>
+        <div className={styles.content}>
+          <h1 className={styles.heading}>Failed to Load Documents</h1>
+          <p className={styles.description}>{docsError}</p>
+          <div className={styles.actions}>
+            <Button variant="secondary" onClick={fetchWorkspaceDocuments}>
+              Retry
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const hasDocuments = documents.length > 0;
 
   return (
     <div className={styles.container}>
       <div className={styles.content}>
+        {refreshError && (
+          <div className={styles.staleBanner} role="alert">
+            <span>Could not refresh documents. Your last loaded data is still shown ({refreshError}).</span>
+            <Button variant="secondary" size="sm" onClick={fetchWorkspaceDocuments}>
+              Retry
+            </Button>
+          </div>
+        )}
+
         <h1 className={styles.heading}>
           {hasDocuments ? activeWorkspace?.name || 'Workspace Documents' : 'Your workspace is ready.'}
         </h1>
@@ -112,7 +171,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
             : 'Create your first document to start writing.'}
         </p>
 
-        {!isViewer && (
+        {canCreate && (
           <div className={styles.actions}>
             <Button
               variant="primary"

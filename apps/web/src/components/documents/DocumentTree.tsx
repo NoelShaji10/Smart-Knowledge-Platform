@@ -25,7 +25,8 @@ interface TreeNodeProps {
   onRenameChange: (val: string) => void;
   onRenameCommit: (doc: Document) => void;
   onRenameCancel: () => void;
-  isViewer: boolean;
+  canManage: boolean;
+  canArchive: boolean;
 }
 
 function TreeNode({
@@ -44,7 +45,8 @@ function TreeNode({
   onRenameChange,
   onRenameCommit,
   onRenameCancel,
-  isViewer,
+  canManage,
+  canArchive,
 }: TreeNodeProps) {
   const children = childrenMap.get(document.id) || [];
   const hasChildren = children.length > 0;
@@ -53,8 +55,8 @@ function TreeNode({
   const isRenaming = renamingDocId === document.id;
 
   const menuItems = useMemo((): DropdownItem[] => {
-    if (isViewer) return [];
-    return [
+    if (!canManage) return [];
+    const items: DropdownItem[] = [
       {
         id: 'add-sub',
         label: 'Add sub-document',
@@ -70,19 +72,26 @@ function TreeNode({
         label: 'Move to...',
         onClick: () => onStartMove(document),
       },
-      {
-        id: 'divider-1',
-        label: '',
-        divider: true,
-      },
-      {
-        id: 'archive',
-        label: 'Archive',
-        danger: true,
-        onClick: () => onArchive(document),
-      },
     ];
-  }, [isViewer, document, onAddSubDocument, onStartRename, onStartMove, onArchive]);
+
+    if (canArchive) {
+      items.push(
+        {
+          id: 'divider-1',
+          label: '',
+          divider: true,
+        },
+        {
+          id: 'archive',
+          label: 'Archive',
+          danger: true,
+          onClick: () => onArchive(document),
+        },
+      );
+    }
+
+    return items;
+  }, [canManage, canArchive, document, onAddSubDocument, onStartRename, onStartMove, onArchive]);
 
   return (
     <li className={styles.treeNode}>
@@ -151,7 +160,7 @@ function TreeNode({
           )}
         </div>
 
-        {!isViewer && !isRenaming && (
+        {canManage && !isRenaming && (
           <div className={styles.nodeActions}>
             <button
               type="button"
@@ -207,7 +216,8 @@ function TreeNode({
               onRenameChange={onRenameChange}
               onRenameCommit={onRenameCommit}
               onRenameCancel={onRenameCancel}
-              isViewer={isViewer}
+              canManage={canManage}
+              canArchive={canArchive}
             />
           ))}
         </ul>
@@ -241,7 +251,9 @@ export function DocumentTree() {
   // Restoring state tracking
   const [restoringDocId, setRestoringDocId] = useState<string | null>(null);
 
-  const isViewer = userRole === 'viewer';
+  const canManage = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
+  const canArchive = userRole === 'owner' || userRole === 'admin';
+  const isViewer = userRole === 'viewer' || !canManage;
 
   // Extract selected document ID from route /workspaces/[workspaceId]/documents/[documentId]
   const match = pathname?.match(/\/documents\/([a-zA-Z0-9-]+)/);
@@ -259,7 +271,7 @@ export function DocumentTree() {
       setExpandedNodeIds((prev) => {
         const next = new Set(prev);
         for (const doc of res.documents) {
-          if (doc.parent_id) {
+          if (doc.parent_id && !doc.is_archived) {
             next.add(doc.parent_id);
           }
         }
@@ -275,6 +287,9 @@ export function DocumentTree() {
       } else if (err instanceof ApiError) {
         setError(err.message || 'Failed to load documents');
         showToast(err.message || 'Failed to load documents', 'error');
+      } else if (err instanceof Error) {
+        setError(err.message || 'Failed to load documents');
+        showToast(err.message || 'Failed to load document navigation', 'error');
       } else {
         setError('Failed to load documents');
         showToast('Failed to load document navigation', 'error');
@@ -321,7 +336,7 @@ export function DocumentTree() {
   };
 
   const handleCreateDocument = async (parentId: string | null = null) => {
-    if (!activeWorkspace || isViewer) return;
+    if (!activeWorkspace || !canManage) return;
     setCreating(true);
     try {
       const res = await api.createDocument(activeWorkspace.id, {
@@ -351,7 +366,7 @@ export function DocumentTree() {
   };
 
   const handleStartRename = (doc: Document) => {
-    if (isViewer) return;
+    if (!canManage) return;
     setRenamingDocId(doc.id);
     setRenameValue(doc.title || 'Untitled Document');
   };
@@ -362,7 +377,7 @@ export function DocumentTree() {
   };
 
   const handleRenameCommit = async (doc: Document) => {
-    if (!activeWorkspace || !renamingDocId || isViewer) return;
+    if (!activeWorkspace || !renamingDocId || !canManage) return;
 
     const trimmed = renameValue.trim() || 'Untitled Document';
     const originalTitle = doc.title;
@@ -394,7 +409,7 @@ export function DocumentTree() {
   };
 
   const handleArchive = async (doc: Document) => {
-    if (!activeWorkspace || isViewer) return;
+    if (!activeWorkspace || !canArchive) return;
     try {
       const res = await api.archiveDocument(activeWorkspace.id, doc.id);
       setDocuments((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
@@ -414,7 +429,7 @@ export function DocumentTree() {
   };
 
   const handleRestore = async (doc: Document) => {
-    if (!activeWorkspace || isViewer) return;
+    if (!activeWorkspace || !canArchive) return;
     setRestoringDocId(doc.id);
     try {
       const res = await api.restoreDocument(activeWorkspace.id, doc.id);
@@ -449,15 +464,20 @@ export function DocumentTree() {
     return documents.filter((d) => d.is_archived);
   }, [documents]);
 
-  // Build tree hierarchy map for active documents
+  // Build tree hierarchy map for active documents.
+  // Active documents whose parents are archived or missing are treated as root-level items.
   const childrenMap = useMemo(() => {
+    const activeDocIdSet = new Set(activeDocuments.map((d) => d.id));
     const map = new Map<string | null, Document[]>();
+
     for (const doc of activeDocuments) {
-      const pId = doc.parent_id || null;
-      if (!map.has(pId)) {
-        map.set(pId, []);
+      const effectiveParentId =
+        doc.parent_id && activeDocIdSet.has(doc.parent_id) ? doc.parent_id : null;
+
+      if (!map.has(effectiveParentId)) {
+        map.set(effectiveParentId, []);
       }
-      map.get(pId)!.push(doc);
+      map.get(effectiveParentId)!.push(doc);
     }
     return map;
   }, [activeDocuments]);
@@ -482,7 +502,7 @@ export function DocumentTree() {
     <div className={styles.container}>
       <div className={styles.header}>
         <span className={styles.title}>Documents</span>
-        {!isViewer && (
+        {canManage && (
           <div className={styles.headerActions}>
             <button
               type="button"
@@ -501,7 +521,7 @@ export function DocumentTree() {
         )}
       </div>
 
-      {/* Explicit Error State with Retry Button */}
+      {/* Explicit Error State with Retry Button for initial failure */}
       {error && documents.length === 0 ? (
         <div className={styles.errorState} role="alert">
           <span className={styles.errorText}>{error}</span>
@@ -519,7 +539,7 @@ export function DocumentTree() {
         /* Explicit Empty State */
         <div className={styles.emptyState}>
           <span className={styles.emptyText}>No documents in this workspace yet.</span>
-          {!isViewer && (
+          {canManage && (
             <Button
               type="button"
               variant="secondary"
@@ -535,6 +555,23 @@ export function DocumentTree() {
       ) : (
         /* Active Document Tree */
         <>
+          {error && documents.length > 0 && (
+            <div className={styles.refreshErrorBanner} role="alert">
+              <span className={styles.refreshErrorText}>
+                Could not refresh documents. Your last loaded data is still shown.
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className={styles.retryBtn}
+                onClick={fetchDocuments}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+
           {rootDocuments.length === 0 && activeDocuments.length === 0 ? (
             <div className={styles.emptyText}>No active documents.</div>
           ) : (
@@ -557,14 +594,15 @@ export function DocumentTree() {
                   onRenameChange={setRenameValue}
                   onRenameCommit={handleRenameCommit}
                   onRenameCancel={handleRenameCancel}
-                  isViewer={isViewer}
+                  canManage={canManage}
+                  canArchive={canArchive}
                 />
               ))}
             </ul>
           )}
 
           {/* Bottom create button */}
-          {!isViewer && (
+          {canManage && (
             <button
               type="button"
               className={styles.newDocBtn}
@@ -626,7 +664,7 @@ export function DocumentTree() {
                     >
                       {doc.title || 'Untitled Document'}
                     </Link>
-                    {!isViewer && (
+                    {canArchive && (
                       <button
                         type="button"
                         className={styles.restoreBtn}

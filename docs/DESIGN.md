@@ -21,7 +21,7 @@ The following decisions define the visual and interaction direction for the T7 i
 8. **Sidebar is 240px on desktop, overlay on tablet, drawer on mobile.** Three breakpoints. Sidebar collapse to 48px icon-only mode is optional for T7.
 9. **Auth pages are product pages.** Same typography, colors, and spacing. Centered form, no card border or shadow, no decorative elements. Validate on blur. Show inline errors.
 10. **Empty workspace = blank page, not dashboard.** No stats, no activity feeds, no illustrations. A heading, a description, and a single CTA to create a document.
-11. **"New Document" button is a T7 placeholder.** Visually present in the sidebar and empty state, but non-functional until T8. Implement as a styled button that shows a "coming soon" toast or is visually disabled.
+11. **Document creation is fully functional.** Superseding the initial T7 shell placeholder, real document creation is active across the workspace empty state, sidebar document tree, and header. It interacts with the live REST API and PostgreSQL persistence.
 12. **No unnecessary dependencies.** Reuse what the repository already provides: Next.js 14, React 18, TypeScript. Tiptap packages exist in `package.json` but are T8 concerns.
 13. **Accessibility is structural, not decorative.** Visible focus rings on every interactive element. Semantic HTML. Keyboard navigation throughout. Reduced-motion support. Contrast ratios meet WCAG AA.
 14. **T7 builds the shell. T8 fills it. T9 extends it.** The shell must accommodate document trees, editors, and right-side panels without structural changes, but none of those are built in T7.

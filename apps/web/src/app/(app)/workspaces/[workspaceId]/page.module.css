@@ -11,13 +11,13 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  max-width: 480px;
+  max-width: 520px;
   width: 100%;
 }
 
 .heading {
   font-family: var(--font-display);
-  font-size: var(--text-xl);
+  font-size: var(--text-2xl);
   font-weight: 500;
   color: var(--fg);
   margin-bottom: var(--space-2);
@@ -28,4 +28,59 @@
   color: var(--fg-secondary);
   margin-bottom: var(--space-6);
   line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.docListSection {
+  width: 100%;
+  margin-top: var(--space-4);
+  text-align: left;
+}
+
+.sectionTitle {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--fg-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.docList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.docCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.docCard:hover {
+  background-color: var(--surface-alt);
+  border-color: var(--accent);
+}
+
+.docMeta {
+  font-size: var(--text-xs);
+  color: var(--fg-tertiary);
 }

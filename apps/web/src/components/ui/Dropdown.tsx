@@ -18,9 +18,10 @@ export interface DropdownProps {
   items: DropdownItem[];
   align?: 'left' | 'right';
   className?: string;
+  ariaLabel?: string;
 }
 
-export function Dropdown({ trigger, items, align = 'left', className = '' }: DropdownProps) {
+export function Dropdown({ trigger, items, align = 'left', className = '', ariaLabel }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -96,6 +97,12 @@ export function Dropdown({ trigger, items, align = 'left', className = '' }: Dro
         onClick={toggle}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label={
+          ariaLabel ||
+          (React.isValidElement(trigger) && (trigger.props as any)?.['aria-label']
+            ? (trigger.props as any)['aria-label']
+            : undefined)
+        }
       >
         {trigger}
       </button>

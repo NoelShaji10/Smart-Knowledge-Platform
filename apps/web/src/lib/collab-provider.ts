@@ -7,8 +7,14 @@ import { api, ApiError } from './api';
 
 export const MESSAGE_YJS_SYNC = 0;
 export const MESSAGE_YJS_AWARENESS = 1;
+export const MESSAGE_PERSISTENCE = 2;
+
+export const PERSISTENCE_STATUS_PERSISTED = 0;
+export const PERSISTENCE_STATUS_PERSISTING = 1;
+export const PERSISTENCE_STATUS_ERROR = 2;
 
 export type CollabProviderStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type PersistenceState = 'persisted' | 'editing' | 'saving' | 'error' | 'delayed';
 
 export interface CollabProviderOptions {
   workspaceId: string;
@@ -21,6 +27,7 @@ export interface CollabProviderOptions {
     color?: string;
   };
   onStatusChange?: (status: CollabProviderStatus) => void;
+  onPersistenceChange?: (state: PersistenceState, details?: { error?: string }) => void;
   onError?: (error: Error) => void;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
@@ -32,12 +39,18 @@ export class CollabProvider {
   public readonly doc: Y.Doc;
   public readonly awareness: awarenessProtocol.Awareness;
   public status: CollabProviderStatus = 'disconnected';
+  public persistenceState: PersistenceState = 'persisted';
 
   private collabUrl: string;
   private ws: WebSocket | null = null;
   private isDestroyed = false;
   private onStatusChange?: (status: CollabProviderStatus) => void;
+  private onPersistenceChange?: (state: PersistenceState, details?: { error?: string }) => void;
   private onError?: (error: Error) => void;
+
+  private localEditRev = 0;
+  private inFlightEditRev = 0;
+  private acknowledgedLocalRev = 0;
 
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private currentBackoffMs: number;
@@ -51,6 +64,7 @@ export class CollabProvider {
     this.awareness = new awarenessProtocol.Awareness(this.doc);
     this.collabUrl = options.collabUrl || process.env.NEXT_PUBLIC_COLLAB_URL || 'http://localhost:3001';
     this.onStatusChange = options.onStatusChange;
+    this.onPersistenceChange = options.onPersistenceChange;
     this.onError = options.onError;
 
     this.initialBackoffMs = options.initialBackoffMs ?? 1000;
@@ -84,7 +98,36 @@ export class CollabProvider {
     }
   }
 
+  private updatePersistenceState(newState: PersistenceState, details?: { error?: string }): void {
+    if (this.persistenceState !== newState) {
+      this.persistenceState = newState;
+      if (this.onPersistenceChange && !this.isDestroyed) {
+        this.onPersistenceChange(newState, details);
+      }
+    }
+  }
+
+  public get isDirty(): boolean {
+    return this.localEditRev > this.acknowledgedLocalRev;
+  }
+
+  public requestPersistenceFlush(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_PERSISTENCE);
+        this.ws.send(encoding.toUint8Array(encoder));
+      } catch (err) {
+        console.error('[CollabProvider] Failed to send persistence flush request:', err);
+      }
+    }
+  }
+
   private handleDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    if (origin !== this) {
+      this.localEditRev += 1;
+      this.updatePersistenceState('editing');
+    }
     if (origin !== this && this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         const encoder = encoding.createEncoder();
@@ -232,6 +275,31 @@ export class CollabProvider {
           } else if (messageType === MESSAGE_YJS_AWARENESS) {
             const awarenessUpdate = decoding.readVarUint8Array(decoder);
             awarenessProtocol.applyAwarenessUpdate(this.awareness, awarenessUpdate, 'remote');
+          } else if (messageType === MESSAGE_PERSISTENCE) {
+            const status = decoding.readVarUint(decoder);
+            const _seq = decoding.readVarUint(decoder);
+
+            if (status === PERSISTENCE_STATUS_PERSISTING) {
+              this.inFlightEditRev = this.localEditRev;
+              this.updatePersistenceState('saving');
+            } else if (status === PERSISTENCE_STATUS_PERSISTED) {
+              this.acknowledgedLocalRev = Math.max(this.acknowledgedLocalRev, this.inFlightEditRev);
+              if (this.localEditRev <= this.acknowledgedLocalRev) {
+                this.updatePersistenceState('persisted');
+              } else {
+                this.updatePersistenceState('editing');
+              }
+            } else if (status === PERSISTENCE_STATUS_ERROR) {
+              let errorMsg = 'Failed to persist document snapshot';
+              try {
+                if (decoding.hasContent(decoder)) {
+                  errorMsg = decoding.readVarString(decoder);
+                }
+              } catch {
+                // Ignore decoding error
+              }
+              this.updatePersistenceState('error', { error: errorMsg });
+            }
           }
         } catch (err) {
           console.error('[CollabProvider] Error processing incoming message:', err);

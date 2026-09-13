@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { CollabProvider, CollabProviderStatus } from '@/lib/collab-provider';
+import { CollabProvider, CollabProviderStatus, PersistenceState } from '@/lib/collab-provider';
 import { getCollaboratorColor } from '@/lib/collab-colors';
 
 export interface UseCollaborationOptions {
@@ -29,9 +29,11 @@ export interface UseCollaborationReturn {
   provider: CollabProvider | null;
   yDoc: Y.Doc | null;
   status: CollabProviderStatus;
+  persistenceState: PersistenceState;
   error: Error | null;
   connectedUsers: CollabUser[];
   indexeddbProvider: IndexeddbPersistence | null;
+  flushPersistence: () => void;
 }
 
 export function useCollaboration({
@@ -43,6 +45,7 @@ export function useCollaboration({
   const [provider, setProvider] = useState<CollabProvider | null>(null);
   const [yDoc, setYDoc] = useState<Y.Doc | null>(null);
   const [status, setStatus] = useState<CollabProviderStatus>('disconnected');
+  const [persistenceState, setPersistenceState] = useState<PersistenceState>('persisted');
   const [error, setError] = useState<Error | null>(null);
   const [connectedUsers, setConnectedUsers] = useState<CollabUser[]>([]);
   const [indexeddbProvider, setIndexeddbProvider] = useState<IndexeddbPersistence | null>(null);
@@ -52,6 +55,7 @@ export function useCollaboration({
       setProvider(null);
       setYDoc(null);
       setStatus('disconnected');
+      setPersistenceState('persisted');
       setError(null);
       setConnectedUsers([]);
       setIndexeddbProvider(null);
@@ -86,6 +90,11 @@ export function useCollaboration({
       onStatusChange: (newStatus) => {
         if (isMounted) {
           setStatus(newStatus);
+        }
+      },
+      onPersistenceChange: (newPersistenceState) => {
+        if (isMounted) {
+          setPersistenceState(newPersistenceState);
         }
       },
       onError: (err) => {
@@ -141,19 +150,26 @@ export function useCollaboration({
       setProvider(null);
       setYDoc(null);
       setStatus('disconnected');
+      setPersistenceState('persisted');
       setError(null);
       setConnectedUsers([]);
       setIndexeddbProvider(null);
     };
   }, [workspaceId, documentId, enabled, user?.id, user?.displayName, user?.color]);
 
+  const flushPersistence = () => {
+    provider?.requestPersistenceFlush();
+  };
+
   return {
     provider,
     yDoc,
     status,
+    persistenceState,
     error,
     connectedUsers,
     indexeddbProvider,
+    flushPersistence,
   };
 }
 

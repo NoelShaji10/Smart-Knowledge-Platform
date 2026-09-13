@@ -31,6 +31,23 @@
   color: var(--accent);
 }
 
+.pending {
+  color: #d97706;
+}
+
+.delayed {
+  color: #b45309;
+}
+
+.offline {
+  color: var(--fg-tertiary);
+}
+
+.reconnecting {
+  color: var(--accent);
+  opacity: 0.85;
+}
+
 .error {
   color: var(--danger);
 }

@@ -81,7 +81,11 @@ export function DocumentHeader({
           <span className={styles.saveBadge}>
             {saveState === 'saving' && <span className={`${styles.saveBadge} ${styles.saving}`}>Saving...</span>}
             {saveState === 'saved' && <span className={`${styles.saveBadge} ${styles.saved}`}>Saved</span>}
-            {saveState === 'error' && <span className={`${styles.saveBadge} ${styles.error}`}>Save Error</span>}
+            {saveState === 'editing' && <span className={`${styles.saveBadge} ${styles.pending}`}>Changes pending</span>}
+            {saveState === 'delayed' && <span className={`${styles.saveBadge} ${styles.delayed}`}>Persistence delayed</span>}
+            {saveState === 'disconnected' && <span className={`${styles.saveBadge} ${styles.offline}`}>Offline</span>}
+            {saveState === 'recovering' && <span className={`${styles.saveBadge} ${styles.reconnecting}`}>Reconnecting...</span>}
+            {saveState === 'error' && <span className={`${styles.saveBadge} ${styles.error}`}>Save failed</span>}
           </span>
 
           {!capabilities.canEdit && !document.is_archived && <Badge variant="viewer">View Only</Badge>}

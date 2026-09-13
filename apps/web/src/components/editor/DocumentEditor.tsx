@@ -63,7 +63,14 @@ export function DocumentEditor({
   }, [authUser]);
 
   // 1. Collaboration Hook Lifecycle
-  const { provider, yDoc, status: collabStatus, connectedUsers } = useCollaboration({
+  const {
+    provider,
+    yDoc,
+    status: collabStatus,
+    persistenceState: collabPersistenceState,
+    connectedUsers,
+    flushPersistence,
+  } = useCollaboration({
     workspaceId,
     documentId: document.id,
     enabled: isCollaborative,
@@ -208,10 +215,27 @@ export function DocumentEditor({
   const latestEditorRef = useRef<ReturnType<typeof useEditorSetup>['editor'] | null>(null);
 
   const handleManualSave = useCallback(() => {
-    if (readOnly || isCollaborative) return;
-    const currentHtml = latestEditorRef.current ? latestEditorRef.current.getHTML() : document.content_text;
-    triggerImmediateSave(title, currentHtml);
-  }, [readOnly, isCollaborative, document.content_text, title, triggerImmediateSave]);
+    if (readOnly) return;
+    if (isCollaborative) {
+      if (titleDebounceTimerRef.current) {
+        clearTimeout(titleDebounceTimerRef.current);
+        titleDebounceTimerRef.current = null;
+        queueCollabTitleSave(title);
+      }
+      flushPersistence();
+    } else {
+      const currentHtml = latestEditorRef.current ? latestEditorRef.current.getHTML() : document.content_text;
+      triggerImmediateSave(title, currentHtml);
+    }
+  }, [
+    readOnly,
+    isCollaborative,
+    document.content_text,
+    title,
+    queueCollabTitleSave,
+    flushPersistence,
+    triggerImmediateSave,
+  ]);
 
   const isEditable = useMemo(() => {
     if (readOnly) return false;
@@ -261,6 +285,18 @@ export function DocumentEditor({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFocusMode]);
 
+  // Global shortcut handler for Save (Ctrl+S / Cmd+S)
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleManualSave();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleManualSave]);
+
   // 3. Document prop synchronization
   useEffect(() => {
     const isDocumentSwitch = document.id !== lastDocIdRef.current;
@@ -307,17 +343,26 @@ export function DocumentEditor({
     collabTitleSaveState,
   ]);
 
+  const hasCollabUnsavedChanges =
+    collabPersistenceState === 'editing' ||
+    collabPersistenceState === 'saving' ||
+    collabTitleSaveState === 'saving' ||
+    pendingTitleToSaveRef.current !== null ||
+    inFlightTitlePromiseRef.current !== null;
+
+  const effectiveHasUnsavedChanges = isCollaborative ? hasCollabUnsavedChanges : hasUnsavedChanges;
+
   // Unsaved changes unload guard
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (!isCollaborative && hasUnsavedChanges) {
+      if (effectiveHasUnsavedChanges) {
         e.preventDefault();
         e.returnValue = '';
       }
     }
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges, isCollaborative]);
+  }, [effectiveHasUnsavedChanges]);
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -331,23 +376,60 @@ export function DocumentEditor({
   };
 
   const effectiveSaveState: SaveState = useMemo(() => {
+    if (readOnly) {
+      return 'readonly';
+    }
+
     if (!isCollaborative) {
       return saveState;
     }
+
+    // 1. Check title save state first
     if (collabTitleSaveState === 'error') {
       return 'error';
     }
-    if (collabTitleSaveState === 'saving' || pendingTitleToSaveRef.current !== null || inFlightTitlePromiseRef.current !== null) {
+    if (
+      collabTitleSaveState === 'saving' ||
+      pendingTitleToSaveRef.current !== null ||
+      inFlightTitlePromiseRef.current !== null
+    ) {
       return 'saving';
     }
-    if (collabStatus === 'connected') {
-      return 'saved';
-    }
+
+    // 2. Check connection status
     if (collabStatus === 'connecting') {
+      return 'recovering';
+    }
+    if (collabStatus === 'error') {
+      return 'error';
+    }
+    if (collabStatus === 'disconnected') {
+      return 'disconnected';
+    }
+
+    // 3. Collab status is 'connected' — use real server persistence state
+    if (collabPersistenceState === 'error') {
+      return 'error';
+    }
+    if (collabPersistenceState === 'saving') {
       return 'saving';
     }
-    return 'error';
-  }, [isCollaborative, saveState, collabTitleSaveState, collabStatus]);
+    if (collabPersistenceState === 'editing') {
+      return 'editing';
+    }
+    if (collabPersistenceState === 'delayed') {
+      return 'delayed';
+    }
+
+    return 'saved';
+  }, [
+    readOnly,
+    isCollaborative,
+    saveState,
+    collabTitleSaveState,
+    collabStatus,
+    collabPersistenceState,
+  ]);
 
   useEffect(() => {
     if (onSaveStateChange) {
@@ -365,12 +447,16 @@ export function DocumentEditor({
     editor,
     readOnly: !isEditable,
     saveState: effectiveSaveState,
-    hasUnsavedChanges: isCollaborative ? false : hasUnsavedChanges,
+    hasUnsavedChanges: effectiveHasUnsavedChanges,
     editorMode,
     isFocusMode,
     toggleFocusMode,
     triggerSave: (newTitle: string, newContent: string) => {
-      if (!isCollaborative) triggerImmediateSave(newTitle, newContent);
+      if (!isCollaborative) {
+        triggerImmediateSave(newTitle, newContent);
+      } else {
+        handleManualSave();
+      }
     },
     collabStatus,
     connectedUsers: isCollaborative ? connectedUsers : [],
@@ -423,6 +509,7 @@ export function DocumentEditor({
           collabStatus={isCollaborative ? collabStatus : undefined}
           connectedUsers={isCollaborative ? connectedUsers : []}
           readOnly={readOnly || (isCollaborative && collabStatus !== 'connected')}
+          saveState={effectiveSaveState}
         />
       </div>
     </EditorProvider>

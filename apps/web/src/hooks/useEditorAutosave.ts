@@ -2,7 +2,17 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+export type SaveState =
+  | 'idle'
+  | 'loading'
+  | 'editing'
+  | 'saving'
+  | 'saved'
+  | 'error'
+  | 'delayed'
+  | 'disconnected'
+  | 'recovering'
+  | 'readonly';
 
 export interface UseEditorAutosaveOptions {
   readOnly?: boolean;
@@ -53,6 +63,9 @@ export function useEditorAutosave({
         if (editRevRef.current === saveRev) {
           updateSaveState('saved');
           setHasUnsavedChanges(false);
+        } else {
+          // Newer edits occurred while in-flight; preserve dirty state
+          updateSaveState('editing');
         }
       } catch (err) {
         if (editRevRef.current === saveRev) {
@@ -71,6 +84,7 @@ export function useEditorAutosave({
       editRevRef.current += 1;
       const currentRev = editRevRef.current;
       setHasUnsavedChanges(true);
+      updateSaveState('editing');
       latestContentRef.current = { title: newTitle, contentText: newContent };
 
       cancelDebouncedSave();
@@ -79,7 +93,7 @@ export function useEditorAutosave({
         saveChanges(newTitle, newContent, currentRev);
       }, debounceMs);
     },
-    [readOnly, cancelDebouncedSave, saveChanges, debounceMs],
+    [readOnly, cancelDebouncedSave, saveChanges, debounceMs, updateSaveState],
   );
 
   const triggerImmediateSave = useCallback(

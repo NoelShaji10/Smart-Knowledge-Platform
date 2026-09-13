@@ -11,6 +11,11 @@ import {
 } from './snapshot-service';
 
 export const MESSAGE_YJS_SYNC = 0;
+export const MESSAGE_PERSISTENCE = 2;
+
+export const PERSISTENCE_STATUS_PERSISTED = 0;
+export const PERSISTENCE_STATUS_PERSISTING = 1;
+export const PERSISTENCE_STATUS_ERROR = 2;
 
 export interface ClientConnection {
   id: string;
@@ -30,6 +35,73 @@ export interface Room {
   debounceTimer?: NodeJS.Timeout | null;
   lastActiveUserId?: string;
   isClosing?: boolean;
+  docSeq: number;
+}
+
+export function broadcastPersistence(
+  room: Room,
+  status: number,
+  seq: number,
+  errorMsg?: string
+): void {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_PERSISTENCE);
+  encoding.writeVarUint(encoder, status);
+  encoding.writeVarUint(encoder, seq);
+  if (status === PERSISTENCE_STATUS_ERROR && errorMsg) {
+    encoding.writeVarString(encoder, errorMsg);
+  }
+  const message = encoding.toUint8Array(encoder);
+
+  for (const conn of room.connections) {
+    if (conn.ws.readyState === 1 /* WebSocket.OPEN */) {
+      try {
+        conn.ws.send(message, { binary: true });
+      } catch {
+        // Socket write errors handled by close listeners
+      }
+    }
+  }
+}
+
+export function sendPersistence(
+  conn: ClientConnection,
+  status: number,
+  seq: number,
+  errorMsg?: string
+): void {
+  if (conn.ws.readyState === 1 /* WebSocket.OPEN */) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_PERSISTENCE);
+    encoding.writeVarUint(encoder, status);
+    encoding.writeVarUint(encoder, seq);
+    if (status === PERSISTENCE_STATUS_ERROR && errorMsg) {
+      encoding.writeVarString(encoder, errorMsg);
+    }
+    try {
+      conn.ws.send(encoding.toUint8Array(encoder), { binary: true });
+    } catch {
+      // Socket write errors handled by close listeners
+    }
+  }
+}
+
+export async function flushRoomPersistence(room: Room): Promise<void> {
+  if (room.debounceTimer) {
+    clearTimeout(room.debounceTimer);
+    room.debounceTimer = null;
+  }
+  const seqToPersist = room.docSeq || 0;
+  broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTING, seqToPersist);
+  try {
+    await persistRecoverySnapshot(room.documentId, room.doc);
+    broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
+  } catch (err) {
+    console.error(`[collab-server] Flush snapshot error for ${room.documentId}:`, err);
+    const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
+    broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
+    throw err;
+  }
 }
 
 const rooms = new Map<string, Room>();
@@ -54,9 +126,12 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
           doc,
           connections,
           debounceTimer: null,
+          docSeq: 0,
         };
 
         const onDocUpdate = (update: Uint8Array, origin: unknown) => {
+          newRoom.docSeq = (newRoom.docSeq || 0) + 1;
+
           const encoder = encoding.createEncoder();
           encoding.writeVarUint(encoder, MESSAGE_YJS_SYNC);
           syncProtocol.writeUpdate(encoder, update);
@@ -78,11 +153,18 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
           }
           const env = getEnv();
           const debounceMs = env.SNAPSHOT_DEBOUNCE_MS || 2000;
-          newRoom.debounceTimer = setTimeout(() => {
+          newRoom.debounceTimer = setTimeout(async () => {
             newRoom.debounceTimer = null;
-            persistRecoverySnapshot(documentId, doc).catch((err) => {
+            const seqToPersist = newRoom.docSeq || 0;
+            broadcastPersistence(newRoom, PERSISTENCE_STATUS_PERSISTING, seqToPersist);
+            try {
+              await persistRecoverySnapshot(documentId, doc);
+              broadcastPersistence(newRoom, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
+            } catch (err) {
               console.error(`[collab-server] Debounced snapshot error for ${documentId}:`, err);
-            });
+              const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
+              broadcastPersistence(newRoom, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
+            }
           }, debounceMs);
         };
 

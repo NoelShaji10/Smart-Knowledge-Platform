@@ -18,6 +18,11 @@ import {
   ClientConnection,
   Room,
   MESSAGE_YJS_SYNC,
+  MESSAGE_PERSISTENCE,
+  sendPersistence,
+  flushRoomPersistence,
+  PERSISTENCE_STATUS_PERSISTED,
+  PERSISTENCE_STATUS_PERSISTING,
 } from './room-manager';
 
 export function sendBinary(ws: WebSocket, payload: Uint8Array): void {
@@ -100,6 +105,16 @@ export function handleIncomingMessage(
             sendBinary(conn.ws, buf);
           }
         }
+        break;
+      }
+      case MESSAGE_PERSISTENCE: {
+        // Client requested persistence flush (e.g. manual Ctrl+S)
+        if (!client.canEdit) {
+          return;
+        }
+        flushRoomPersistence(room).catch((err) => {
+          console.error(`[collab-server] Failed to flush room persistence for ${room.documentId}:`, err);
+        });
         break;
       }
       default: {
@@ -268,6 +283,10 @@ export function createCollabServer() {
 
     // Initial Sync: Send SyncStep1 from server to client
     sendSyncStep1(clientConn, room);
+
+    // Initial Persistence Status: Inform client whether room is persisting or persisted
+    const initialStatus = room.debounceTimer ? PERSISTENCE_STATUS_PERSISTING : PERSISTENCE_STATUS_PERSISTED;
+    sendPersistence(clientConn, initialStatus, room.docSeq || 0);
 
     ws.on('message', (data: WebSocket.RawData) => {
       try {

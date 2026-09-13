@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Editor } from '@tiptap/react';
 import { CollabProviderStatus } from '@/lib/collab-provider';
 import { CollabUser } from '@/hooks/useCollaboration';
+import { SaveState } from '@/hooks/useEditorAutosave';
 import styles from './EditorStatusBar.module.css';
 
 export const WORDS_PER_MINUTE = 200;
@@ -20,6 +21,7 @@ export interface EditorStatusBarProps {
   collabStatus?: CollabProviderStatus;
   connectedUsers?: CollabUser[];
   readOnly?: boolean;
+  saveState?: SaveState;
 }
 
 export function EditorStatusBar({
@@ -27,6 +29,7 @@ export function EditorStatusBar({
   collabStatus,
   connectedUsers = [],
   readOnly = false,
+  saveState,
 }: EditorStatusBarProps) {
   const [stats, setStats] = useState({ words: 0, characters: 0 });
 
@@ -36,7 +39,12 @@ export function EditorStatusBar({
     const updateStats = () => {
       const words = editor.storage.characterCount?.words() ?? 0;
       const characters = editor.storage.characterCount?.characters() ?? 0;
-      setStats({ words, characters });
+      setStats((prev) => {
+        if (prev.words === words && prev.characters === characters) {
+          return prev;
+        }
+        return { words, characters };
+      });
     };
 
     updateStats(); // Initial update
@@ -55,10 +63,26 @@ export function EditorStatusBar({
   const collabStatusLabel = (() => {
     if (readOnly) return 'View Only';
     if (collabStatus === 'connected') {
-      return userCount > 1 ? `Connected • ${userCount} collaborators` : 'Connected';
+      const userPart = userCount > 1 ? `${userCount} collaborators` : null;
+      let persistPart = 'Saved';
+      if (saveState === 'editing') persistPart = 'Changes pending';
+      else if (saveState === 'saving') persistPart = 'Saving...';
+      else if (saveState === 'error') persistPart = 'Save failed';
+      else if (saveState === 'delayed') persistPart = 'Persistence delayed';
+      else if (saveState === 'saved') persistPart = 'Saved';
+
+      if (userPart) {
+        return `Connected • ${userPart} • ${persistPart}`;
+      }
+      return `Connected • ${persistPart}`;
     }
     if (collabStatus === 'connecting') return 'Reconnecting...';
-    if (collabStatus === 'disconnected') return 'Disconnected';
+    if (collabStatus === 'disconnected') {
+      if (saveState === 'editing' || saveState === 'saving') {
+        return 'Disconnected • Changes will sync when reconnected';
+      }
+      return 'Disconnected';
+    }
     if (collabStatus === 'error') return 'Connection Error';
     return null;
   })();

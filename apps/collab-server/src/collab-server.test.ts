@@ -17,6 +17,10 @@ import {
   ClientConnection,
   addConnectionToRoom,
   MESSAGE_YJS_SYNC,
+  MESSAGE_PERSISTENCE,
+  PERSISTENCE_STATUS_PERSISTED,
+  PERSISTENCE_STATUS_PERSISTING,
+  PERSISTENCE_STATUS_ERROR,
 } from './room-manager';
 import * as storage from '@knowledge/storage';
 import * as snapshotService from './snapshot-service';
@@ -342,6 +346,175 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
 
       // Room doc state remains intact
       expect(room.doc.getText('content').toString()).toBe('');
+    });
+  });
+
+  describe('Phase 5 T3: Durable Persistence Acknowledgement & Flush Protocol', () => {
+    it('broadcasts persisting and persisted packets when snapshot debounce fires', async () => {
+      vi.useFakeTimers();
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000120');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-persist-1',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-persist-1',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000120',
+        canEdit: true,
+        effectiveRole: 'editor',
+      };
+      addConnectionToRoom(room, conn);
+
+      // Trigger doc update
+      room.doc.getText('content').insert(0, 'Content requiring persistence');
+
+      // Fast-forward debounce timer
+      await vi.advanceTimersByTimeAsync(2000);
+
+      // Verify WebSocket received persistence messages
+      const persistenceMessages = mockWs.sentData
+        .map((buf) => {
+          const dec = decoding.createDecoder(buf);
+          const type = decoding.readVarUint(dec);
+          if (type === MESSAGE_PERSISTENCE) {
+            return {
+              status: decoding.readVarUint(dec),
+              seq: decoding.readVarUint(dec),
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+
+      expect(persistenceMessages).toContainEqual({
+        status: PERSISTENCE_STATUS_PERSISTING,
+        seq: expect.any(Number),
+      });
+      expect(persistenceMessages).toContainEqual({
+        status: PERSISTENCE_STATUS_PERSISTED,
+        seq: expect.any(Number),
+      });
+      expect(snapshotService.persistRecoverySnapshot).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000120',
+        room.doc,
+      );
+      vi.useRealTimers();
+    });
+
+    it('handles incoming MESSAGE_PERSISTENCE flush request from an editor immediately', async () => {
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000121');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-flush-editor',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-editor',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000121',
+        canEdit: true,
+        effectiveRole: 'editor',
+      };
+      addConnectionToRoom(room, conn);
+
+      // Client sends flush request packet (MESSAGE_PERSISTENCE)
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_PERSISTENCE);
+      const flushPayload = Buffer.from(encoding.toUint8Array(enc));
+
+      handleIncomingMessage(conn, room, flushPayload);
+
+      // Wait a tick for async flush
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Check sent messages for persisting and persisted
+      const persistenceStatuses = mockWs.sentData
+        .map((buf) => {
+          const dec = decoding.createDecoder(buf);
+          const type = decoding.readVarUint(dec);
+          if (type === MESSAGE_PERSISTENCE) {
+            return decoding.readVarUint(dec);
+          }
+          return null;
+        })
+        .filter((s) => s !== null);
+
+      expect(persistenceStatuses).toContain(PERSISTENCE_STATUS_PERSISTING);
+      expect(persistenceStatuses).toContain(PERSISTENCE_STATUS_PERSISTED);
+    });
+
+    it('ignores incoming MESSAGE_PERSISTENCE flush request from a viewer (canEdit: false)', async () => {
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000122');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-flush-viewer',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-viewer',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000122',
+        canEdit: false,
+        effectiveRole: 'viewer',
+      };
+      addConnectionToRoom(room, conn);
+
+      const persistSpy = vi.spyOn(snapshotService, 'persistRecoverySnapshot');
+      persistSpy.mockClear();
+
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_PERSISTENCE);
+      const flushPayload = Buffer.from(encoding.toUint8Array(enc));
+
+      handleIncomingMessage(conn, room, flushPayload);
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(persistSpy).not.toHaveBeenCalled();
+      expect(mockWs.sentData.length).toBe(0);
+    });
+
+    it('broadcasts PERSISTENCE_STATUS_ERROR when snapshot persistence fails', async () => {
+      vi.useFakeTimers();
+      const room = await getOrCreateRoom('00000000-0000-0000-0000-000000000123');
+      const mockWs = new MockWebSocket();
+      const conn: ClientConnection = {
+        id: 'conn-persist-err',
+        ws: mockWs as unknown as WebSocket,
+        userId: 'user-1',
+        workspaceId: 'ws-1',
+        documentId: '00000000-0000-0000-0000-000000000123',
+        canEdit: true,
+        effectiveRole: 'editor',
+      };
+      addConnectionToRoom(room, conn);
+
+      vi.spyOn(snapshotService, 'persistRecoverySnapshot').mockRejectedValueOnce(
+        new Error('Disk quota exceeded'),
+      );
+
+      // Trigger doc update
+      room.doc.getText('content').insert(0, 'Failing content');
+
+      // Fast-forward debounce
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const errorMessages = mockWs.sentData
+        .map((buf) => {
+          const dec = decoding.createDecoder(buf);
+          const type = decoding.readVarUint(dec);
+          if (type === MESSAGE_PERSISTENCE) {
+            const status = decoding.readVarUint(dec);
+            const seq = decoding.readVarUint(dec);
+            let msg = '';
+            if (status === PERSISTENCE_STATUS_ERROR && decoding.hasContent(dec)) {
+              msg = decoding.readVarString(dec);
+            }
+            return { status, seq, msg };
+          }
+          return null;
+        })
+        .filter((m) => m && m.status === PERSISTENCE_STATUS_ERROR);
+
+      expect(errorMessages.length).toBeGreaterThan(0);
+      expect(errorMessages[0]?.msg).toContain('Disk quota exceeded');
+      vi.useRealTimers();
     });
   });
 });

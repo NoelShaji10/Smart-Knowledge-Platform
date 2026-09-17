@@ -446,10 +446,13 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
     expect(room.doc.getXmlFragment('default').toString()).toBe('<p>Current Live Content</p>');
   });
 
-  it('returns null when room is not active', async () => {
+  it('performs room-less restore when room is not active in memory', async () => {
     clearAllRooms();
-    const result = await restoreActiveRoom('non-existent-doc-id', 1, userId);
-    expect(result).toBeNull();
+    const result = await restoreActiveRoom(docId, 1, userId);
+    expect(result).toBeDefined();
+    expect(result?.document).toBeDefined();
+    expect(result?.newVersion.trigger).toBe('restore');
+    expect(storageSnapshots.has(docId)).toBe(true);
   });
 
   describe('Internal Restore Endpoint & Security', () => {
@@ -504,7 +507,7 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       expect(res.status).toBe(401);
     });
 
-    it('returns hasActiveRoom: false when no active room is open in memory', async () => {
+    it('performs room-less restore under document lock when no room is in memory', async () => {
       clearAllRooms();
       const res = await request(server)
         .post(`/internal/documents/${docId}/restore`)
@@ -512,7 +515,13 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
         .send({ versionNumber: 1, userId });
 
       expect(res.status).toBe(200);
-      expect(res.body.hasActiveRoom).toBe(false);
+      expect(res.body.document).toBeDefined();
+      expect(res.body.newVersion).toBeDefined();
+      expect(res.body.newVersion.version_number).toBe(3);
+      expect(res.body.newVersion.trigger).toBe('restore');
+
+      // Recovery snapshot was updated in storage
+      expect(storageSnapshots.has(docId)).toBe(true);
     });
 
     it('restores active room when room is open in memory', async () => {
@@ -530,8 +539,157 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
         .send({ versionNumber: 1, userId });
 
       expect(res.status).toBe(200);
-      expect(res.body.hasActiveRoom).toBe(true);
+      expect(res.body.document).toBeDefined();
       expect(res.body.newVersion.version_number).toBe(3);
+      expect(res.body.newVersion.trigger).toBe('restore');
+    });
+
+    it('serializes room creation during restore: connecting client blocks and hydrates restored state, never stale state', async () => {
+      clearAllRooms();
+
+      // 1. Seed stale snapshot in storage
+      const staleDoc = new Y.Doc();
+      const staleFrag = staleDoc.getXmlFragment('default');
+      const pStale = new Y.XmlElement('p');
+      pStale.insert(0, [new Y.XmlText('Stale Pre-Restore State')]);
+      staleFrag.insert(0, [pStale]);
+      storageSnapshots.set(docId, Y.encodeStateAsUpdate(staleDoc));
+
+      // 2. Seed restored version in storage
+      const restoredDoc = new Y.Doc();
+      const restoredFrag = restoredDoc.getXmlFragment('default');
+      const pRestored = new Y.XmlElement('p');
+      pRestored.insert(0, [new Y.XmlText('Restored Target Content')]);
+      restoredFrag.insert(0, [pRestored]);
+      storageVersions.set(`${docId}:1`, Y.encodeStateAsUpdate(restoredDoc));
+
+      // 3. Mock saveRecoverySnapshot to introduce an artificial delay simulating slow MinIO write
+      const originalSave = storage.saveRecoverySnapshot;
+      vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId, data) => {
+        await new Promise((r) => setTimeout(r, 60));
+        storageSnapshots.set(dId, new Uint8Array(data));
+        return `snapshots/${dId}/latest.yjs`;
+      });
+
+      // 4. Start restore operation (room does not exist yet)
+      const restorePromise = request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      // 5. In parallel (while restore is still running), a client connects and calls getOrCreateRoom()
+      // Because getOrCreateRoom acquires withDocumentLock(docId), it MUST wait for restore to complete!
+      const roomPromise = (async () => {
+        // slight delay to ensure restore enters withDocumentLock first
+        await new Promise((r) => setTimeout(r, 10));
+        return await getOrCreateRoom(docId);
+      })();
+
+      const [restoreRes, room] = await Promise.all([restorePromise, roomPromise]);
+
+      expect(restoreRes.status).toBe(200);
+      expect(room).toBeDefined();
+
+      // Crucial assertion: the room MUST have hydrated the RESTORED state, NOT the stale state!
+      expect(room.doc.getXmlFragment('default').toString()).toBe('<p>Restored Target Content</p>');
+    });
+
+    it('serializes concurrent restore requests without conflicting version numbers', async () => {
+      clearAllRooms();
+
+      let currentMax = 2;
+      vi.spyOn(database, 'withSystemContext').mockImplementation(async (fn: any) => {
+        const mockSystemDb = {
+          selectFrom: (table: string) => ({
+            where: (_col: string, _op: string, val: any) => ({
+              where: (_col2: string, _op2: string, val2: any) => ({
+                selectAll: () => ({
+                  executeTakeFirst: async () => {
+                    if (table === 'document_versions') {
+                      return {
+                        id: `ver-uuid-${val2}`,
+                        document_id: docId,
+                        version_number: val2,
+                        snapshot_key: `versions/${docId}/${val2}.yjs`,
+                        title: 'Test Doc Title',
+                        content_text: 'Content',
+                        created_by: userId,
+                        trigger: 'manual',
+                        created_at: new Date().toISOString(),
+                      };
+                    }
+                    return null;
+                  },
+                }),
+                select: (_sel: any) => ({
+                  executeTakeFirst: async () => ({ role: 'editor' }),
+                }),
+              }),
+              selectAll: () => ({
+                executeTakeFirst: async () => null,
+              }),
+              select: (_sel: any) => ({
+                executeTakeFirst: async () => {
+                  if (table === 'users') return { id: val };
+                  if (table === 'documents') return { workspace_id: workspaceId, is_archived: 0 };
+                  if (table === 'document_versions') {
+                    currentMax += 1;
+                    return { max_ver: currentMax - 1 };
+                  }
+                  return null;
+                },
+              }),
+            }),
+          }),
+          insertInto: () => ({
+            values: (vals: any) => ({
+              returningAll: () => ({
+                executeTakeFirstOrThrow: async () => ({
+                  id: 'new-ver-uuid',
+                  ...vals,
+                  created_at: new Date().toISOString(),
+                }),
+              }),
+              execute: async () => {},
+            }),
+          }),
+          updateTable: () => ({
+            set: (sets: any) => ({
+              where: () => {
+                const res = {
+                  id: docId,
+                  workspace_id: workspaceId,
+                  snapshot_version: currentMax,
+                  ...sets,
+                };
+                return {
+                  returningAll: () => ({
+                    executeTakeFirstOrThrow: async () => res,
+                  }),
+                  execute: async () => {},
+                };
+              },
+            }),
+          }),
+        };
+        return await fn(mockSystemDb);
+      });
+
+      const p1 = request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      const p2 = request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      const [res1, res2] = await Promise.all([p1, p2]);
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(res1.body.newVersion.version_number).not.toBe(res2.body.newVersion.version_number);
     });
   });
 });

@@ -7,7 +7,6 @@ import {
   loadVersionSnapshot,
   saveVersionSnapshot,
   loadRecoverySnapshot,
-  saveRecoverySnapshot,
 } from '@knowledge/storage';
 
 /**
@@ -239,15 +238,14 @@ export async function restoreVersion(
     throw new Error('Version not found');
   }
 
-  // Step A: Attempt active-room restore via Collab Server
+  // Step A: Delegate to Collab Server under unified per-document lock
   // NO DB lock or transaction is held during this internal HTTP call
   const env = getEnv();
   const collabPort = env.COLLAB_PORT || '3001';
-  let collabResult: { hasActiveRoom: boolean; document?: any; newVersion?: any } | null = null;
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     let res: Response;
     try {
       res = await fetch(`http://127.0.0.1:${collabPort}/internal/documents/${documentId}/restore`, {
@@ -268,7 +266,11 @@ export async function restoreVersion(
     }
 
     if (res.status === 200) {
-      collabResult = (await res.json()) as any;
+      const body = (await res.json()) as any;
+      return {
+        document: body.document,
+        newVersion: body.newVersion,
+      };
     } else if (res.status === 401) {
       throw new Error('Collab server authentication failed');
     } else if (res.status === 403) {
@@ -295,122 +297,4 @@ export async function restoreVersion(
     // Fail closed: Collab server unreachable must throw, never silently proceed to room-less restore
     throw new Error(`Collab server is unreachable: ${err.message}`);
   }
-
-  // If collab server handled active room restore, return the result
-  if (collabResult && collabResult.hasActiveRoom) {
-    return {
-      document: collabResult.document,
-      newVersion: collabResult.newVersion,
-    };
-  }
-
-  // Step B: Room-less restore (collab server explicitly returned hasActiveRoom === false)
-  // 1. Load historical snapshot bytes
-  const snapshotBytes = await loadVersionSnapshot(documentId, versionNumber);
-  const histDoc = new Y.Doc();
-
-  if (snapshotBytes && snapshotBytes.length > 0) {
-    try {
-      Y.applyUpdate(histDoc, snapshotBytes);
-    } catch (err) {
-      throw new Error('Historical version snapshot is corrupt or invalid');
-    }
-  } else if (versionRow.content_text !== null && versionRow.content_text !== undefined) {
-    // Fallback for legacy checkpoints
-    const frag = histDoc.getXmlFragment('default');
-    const p = new Y.XmlElement('p');
-    p.insert(0, [new Y.XmlText(versionRow.content_text)]);
-    frag.insert(0, [p]);
-  }
-
-  // 2. Encode restored update bytes
-  const restoredBytes = Y.encodeStateAsUpdate(histDoc);
-  const restoredTitle = versionRow.title || 'Untitled';
-  const restoredContentText = versionRow.content_text || '';
-
-  // 3. Persist restored state to recovery snapshot in MinIO (fail closed if storage fails)
-  const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes);
-
-  // 4. Now execute transactional DB update with row lock
-  return scopedDb.execute(async (db) => {
-    const currentDoc = await db
-      .selectFrom('documents')
-      .where('id', '=', documentId)
-      .where('workspace_id', '=', workspaceId)
-      .select(['id', 'is_archived'])
-      .forUpdate()
-      .executeTakeFirst();
-
-    if (!currentDoc) {
-      throw new Error('Document not found');
-    }
-    if (currentDoc.is_archived) {
-      throw new Error('Cannot restore version for an archived document');
-    }
-
-    // Atomic next version calculation
-    const maxRes = await db
-      .selectFrom('document_versions')
-      .where('document_id', '=', documentId)
-      .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
-      .executeTakeFirst();
-
-    const nextVersion = Number(maxRes?.max_ver || 0) + 1;
-
-    // Save version snapshot for restore checkpoint (fail closed if storage fails)
-    const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
-
-    // Update document in PostgreSQL
-    const updatedDoc = await db
-      .updateTable('documents')
-      .set({
-        title: restoredTitle,
-        content_text: restoredContentText,
-        snapshot_key: recoveryKey || versionKey,
-        snapshot_version: nextVersion,
-        updated_at: new Date(),
-      })
-      .where('id', '=', documentId)
-      .where('workspace_id', '=', workspaceId)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
-    // Insert new version checkpoint
-    const newVersion = await db
-      .insertInto('document_versions')
-      .values({
-        document_id: documentId,
-        version_number: nextVersion,
-        snapshot_key: versionKey,
-        title: restoredTitle,
-        content_text: restoredContentText,
-        created_by: userId,
-        trigger: 'restore',
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
-    // Insert audit event
-    await db
-      .insertInto('audit_events')
-      .values({
-        workspace_id: workspaceId,
-        actor_id: userId,
-        action: 'document.version.restored',
-        resource_type: 'document',
-        resource_id: documentId,
-        metadata: JSON.stringify({
-          restoredVersionNumber: versionNumber,
-          newVersionNumber: nextVersion,
-        }),
-        ip_address: null,
-        user_agent: null,
-      })
-      .execute();
-
-    return {
-      document: updatedDoc,
-      newVersion,
-    };
-  });
 }

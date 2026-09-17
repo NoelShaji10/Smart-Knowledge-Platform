@@ -475,4 +475,60 @@ describe('Document Versioning Integration Tests', () => {
     });
     expect(resViewer.status).toBe(403);
   });
+
+  it('serializes room-less restore with concurrent room creation: connecting client hydrates restored state, never stale state', async () => {
+    if (!isDbConnected) return;
+
+    const scopedOwner = createScopedDb(ownerId);
+    const doc = await createDocument(scopedOwner, {
+      workspaceId: workspaceAId,
+      title: 'TOCTOU Concurrency Test Doc',
+      contentText: 'Target Restored V1 Content',
+      createdBy: ownerId,
+    });
+
+    // 1. Create Version 1 checkpoint
+    const v1 = await createVersionCheckpoint(scopedOwner, workspaceAId, doc.id, ownerId, 'manual');
+    expect(v1.version_number).toBe(1);
+
+    // 2. Simulate subsequent edits leading to stale state V2 in MinIO recovery snapshot
+    const staleDoc = new Y.Doc();
+    const staleFrag = staleDoc.getXmlFragment('default');
+    const pStale = new Y.XmlElement('p');
+    pStale.insert(0, [new Y.XmlText('Stale Pre-Restore V2 Content')]);
+    staleFrag.insert(0, [pStale]);
+    await storage.saveRecoverySnapshot(doc.id, Y.encodeStateAsUpdate(staleDoc));
+
+    // Ensure room is NOT in memory
+    clearAllRooms();
+    expect(getRoom(doc.id)).toBeUndefined();
+
+    // 3. Initiate restore of Version 1 via API concurrently with client connecting (getOrCreateRoom)
+    // Both acquire withDocumentLock(doc.id).
+    const restorePromise = request(app)
+      .post(`/api/v1/workspaces/${workspaceAId}/documents/${doc.id}/versions/1/restore`)
+      .set('Authorization', `Bearer ${editorToken}`);
+
+    // Connecting client attempts to open room concurrently
+    const roomPromise = (async () => {
+      // Small delay to ensure restore request initiates and acquires withDocumentLock first
+      await new Promise((r) => setTimeout(r, 15));
+      return await getOrCreateRoom(doc.id);
+    })();
+
+    const [resRestore, room] = await Promise.all([restorePromise, roomPromise]);
+
+    expect(resRestore.status).toBe(200);
+    expect(resRestore.body.newVersion.version_number).toBe(2);
+    expect(resRestore.body.newVersion.trigger).toBe('restore');
+
+    // Crucial assertion: the room hydrated after restore completed, so its CRDT content
+    // MUST contain the restored V1 content, NOT the stale V2 content!
+    const roomContent = room.doc.getXmlFragment('default').toString();
+    expect(roomContent).toContain('Target Restored V1 Content');
+    expect(roomContent).not.toContain('Stale Pre-Restore V2 Content');
+
+    clearAllRooms();
+  });
 });
+

@@ -7,7 +7,8 @@ import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { sql } from 'kysely';
 import { withSystemContext } from '@knowledge/database';
-import { loadVersionSnapshot, saveVersionSnapshot } from '@knowledge/storage';
+import { withDistributedLock } from '@knowledge/redis';
+import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot } from '@knowledge/storage';
 import {
   loadRoomSnapshot,
   persistRecoverySnapshot,
@@ -155,81 +156,74 @@ export async function flushRoomPersistence(room: Room): Promise<void> {
 }
 
 const rooms = new Map<string, Room>();
-const pendingRoomInits = new Map<string, Promise<Room>>();
+
+export async function withDocumentLock<T>(documentId: string, fn: () => Promise<T>): Promise<T> {
+  return await withDistributedLock(`document:${documentId}`, fn);
+}
 
 export async function getOrCreateRoom(documentId: string): Promise<Room> {
-  let room = rooms.get(documentId);
-  if (room) return room;
+  return await withDocumentLock(documentId, async () => {
+    let room = rooms.get(documentId);
+    if (room) return room;
 
-  let pending = pendingRoomInits.get(documentId);
-  if (!pending) {
-    pending = (async () => {
-      try {
-        const doc = new Y.Doc();
-        const connections = new Set<ClientConnection>();
+    const doc = new Y.Doc();
+    const connections = new Set<ClientConnection>();
 
-        // Hydrate from MinIO recovery snapshot before serving sync requests
-        await loadRoomSnapshot(documentId, doc);
+    // Hydrate from MinIO recovery snapshot before serving sync requests
+    await loadRoomSnapshot(documentId, doc);
 
-        const newRoom: Room = {
-          documentId,
-          doc,
-          connections,
-          debounceTimer: null,
-          docSeq: 0,
-          lastPersistedSeq: -1,
-          inFlightPersistence: null,
-          queuedPersistenceSeq: null,
-        };
+    const newRoom: Room = {
+      documentId,
+      doc,
+      connections,
+      debounceTimer: null,
+      docSeq: 0,
+      lastPersistedSeq: -1,
+      inFlightPersistence: null,
+      queuedPersistenceSeq: null,
+    };
 
-        const onDocUpdate = (update: Uint8Array, origin: unknown) => {
-          newRoom.docSeq = (newRoom.docSeq || 0) + 1;
+    const onDocUpdate = (update: Uint8Array, origin: unknown) => {
+      newRoom.docSeq = (newRoom.docSeq || 0) + 1;
 
-          const encoder = encoding.createEncoder();
-          encoding.writeVarUint(encoder, MESSAGE_YJS_SYNC);
-          syncProtocol.writeUpdate(encoder, update);
-          const message = encoding.toUint8Array(encoder);
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, MESSAGE_YJS_SYNC);
+      syncProtocol.writeUpdate(encoder, update);
+      const message = encoding.toUint8Array(encoder);
 
-          for (const conn of connections) {
-            if (conn !== origin && conn.ws.readyState === 1 /* WebSocket.OPEN */) {
-              try {
-                conn.ws.send(message, { binary: true });
-              } catch {
-                // Socket write errors handled by close listeners
-              }
-            }
+      for (const conn of connections) {
+        if (conn !== origin && conn.ws.readyState === 1 /* WebSocket.OPEN */) {
+          try {
+            conn.ws.send(message, { binary: true });
+          } catch {
+            // Socket write errors handled by close listeners
           }
-
-          // Schedule debounced recovery snapshot
-          if (newRoom.debounceTimer) {
-            clearTimeout(newRoom.debounceTimer);
-          }
-          const env = getEnv();
-          const debounceMs = env.SNAPSHOT_DEBOUNCE_MS || 2000;
-          newRoom.debounceTimer = setTimeout(() => {
-            newRoom.debounceTimer = null;
-            queueRoomPersistence(newRoom).catch(() => {
-              // Error already broadcast and logged
-            });
-          }, debounceMs);
-        };
-
-        doc.on('update', onDocUpdate);
-
-        newRoom.unbindDocListener = () => {
-          doc.off('update', onDocUpdate);
-        };
-
-        rooms.set(documentId, newRoom);
-        return newRoom;
-      } finally {
-        pendingRoomInits.delete(documentId);
+        }
       }
-    })();
-    pendingRoomInits.set(documentId, pending);
-  }
 
-  return await pending;
+      // Schedule debounced recovery snapshot
+      if (newRoom.debounceTimer) {
+        clearTimeout(newRoom.debounceTimer);
+      }
+      const env = getEnv();
+      const debounceMs = env.SNAPSHOT_DEBOUNCE_MS || 2000;
+      newRoom.debounceTimer = setTimeout(() => {
+        newRoom.debounceTimer = null;
+        queueRoomPersistence(newRoom).catch(() => {
+          // Error already broadcast and logged
+        });
+      }, debounceMs);
+    };
+
+    doc.on('update', onDocUpdate);
+
+    newRoom.unbindDocListener = () => {
+      doc.off('update', onDocUpdate);
+    };
+
+    rooms.set(documentId, newRoom);
+    return newRoom;
+  });
 }
 
 export function addConnectionToRoom(room: Room, conn: ClientConnection): void {
@@ -242,42 +236,44 @@ export function removeConnectionFromRoom(room: Room, conn: ClientConnection): vo
 }
 
 export async function removeRoomIfEmpty(documentId: string, lastUserId?: string): Promise<void> {
-  const room = rooms.get(documentId);
-  if (!room || room.connections.size > 0 || room.isClosing) return;
+  return await withDocumentLock(documentId, async () => {
+    const room = rooms.get(documentId);
+    if (!room || room.connections.size > 0 || room.isClosing) return;
 
-  room.isClosing = true;
+    room.isClosing = true;
 
-  if (room.debounceTimer) {
-    clearTimeout(room.debounceTimer);
-    room.debounceTimer = null;
-  }
+    if (room.debounceTimer) {
+      clearTimeout(room.debounceTimer);
+      room.debounceTimer = null;
+    }
 
-  if (room.inFlightPersistence) {
+    if (room.inFlightPersistence) {
+      try {
+        await room.inFlightPersistence;
+      } catch {
+        // Ignored during shutdown
+      }
+    }
+
     try {
-      await room.inFlightPersistence;
-    } catch {
-      // Ignored during shutdown
+      // 1. Persist final recovery snapshot
+      await persistRecoverySnapshot(documentId, room.doc);
+      // 2. Persist session-end version checkpoint
+      await createVersionCheckpointOnSessionEnd(documentId, room.doc, lastUserId || room.lastActiveUserId);
+    } catch (err) {
+      console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
     }
-  }
 
-  try {
-    // 1. Persist final recovery snapshot
-    await persistRecoverySnapshot(documentId, room.doc);
-    // 2. Persist session-end version checkpoint
-    await createVersionCheckpointOnSessionEnd(documentId, room.doc, lastUserId || room.lastActiveUserId);
-  } catch (err) {
-    console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
-  }
-
-  if (room.connections.size === 0) {
-    if (room.unbindDocListener) {
-      room.unbindDocListener();
+    if (room.connections.size === 0) {
+      if (room.unbindDocListener) {
+        room.unbindDocListener();
+      }
+      room.doc.destroy();
+      rooms.delete(documentId);
+    } else {
+      room.isClosing = false;
     }
-    room.doc.destroy();
-    rooms.delete(documentId);
-  } else {
-    room.isClosing = false;
-  }
+  });
 }
 
 export function getRoom(documentId: string): Room | undefined {
@@ -301,7 +297,6 @@ export function clearAllRooms(): void {
     room.doc.destroy();
   }
   rooms.clear();
-  pendingRoomInits.clear();
 }
 
 /**
@@ -376,128 +371,205 @@ export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc):
 }
 
 /**
- * Restore an active room to a historical version.
- * Applies historical state to room.doc, broadcasts updates to connected clients,
- * persists the restored state using T3 persistence sequencing, and creates a NEW version checkpoint.
+ * Restore a document to a historical version.
+ * Unified under withDocumentLock:
+ * - If room is active in memory: mutates room.doc, broadcasts sync updates to connected clients,
+ *   flushes persistence via T3 pipeline, and records the new checkpoint.
+ * - If room is not active: updates MinIO recovery snapshot (so any future/waiting getOrCreateRoom hydrates
+ *   the restored state), updates PostgreSQL, and records the new checkpoint.
+ * Any client attempting to create/hydrate the room during restore is blocked on withDocumentLock until
+ * restore finishes, guaranteeing that stale state is never hydrated.
  */
-export async function restoreActiveRoom(
+export async function restoreDocument(
   documentId: string,
   versionNumber: number,
   userId: string,
-): Promise<{ document: any; newVersion: any } | null> {
-  const room = rooms.get(documentId);
-  if (!room) {
-    return null;
-  }
+): Promise<{ document: any; newVersion: any }> {
+  return await withDocumentLock(documentId, async () => {
+    // 1. Fetch historical version row from database
+    const versionRow = await withSystemContext(async (systemDb) => {
+      return systemDb
+        .selectFrom('document_versions')
+        .where('document_id', '=', documentId)
+        .where('version_number', '=', versionNumber)
+        .selectAll()
+        .executeTakeFirst();
+    });
 
-  // 1. Fetch historical version row from database
-  const versionRow = await withSystemContext(async (systemDb) => {
-    return systemDb
-      .selectFrom('document_versions')
-      .where('document_id', '=', documentId)
-      .where('version_number', '=', versionNumber)
-      .selectAll()
-      .executeTakeFirst();
-  });
-
-  if (!versionRow) {
-    throw new Error('Version not found');
-  }
-
-  // 2. Load historical snapshot bytes
-  const snapshotBytes = await loadVersionSnapshot(documentId, versionNumber);
-  const histDoc = new Y.Doc();
-
-  if (snapshotBytes && snapshotBytes.length > 0) {
-    try {
-      Y.applyUpdate(histDoc, snapshotBytes);
-    } catch (err) {
-      console.error(`[collab-server] Corrupt version snapshot for doc ${documentId} v${versionNumber}:`, err);
-      throw new Error('Historical version snapshot is corrupt or invalid');
+    if (!versionRow) {
+      throw new Error('Version not found');
     }
-  } else if (versionRow.content_text !== null && versionRow.content_text !== undefined) {
-    // Fallback for legacy checkpoints created before full snapshot storage
-    const frag = histDoc.getXmlFragment('default');
-    const p = new Y.XmlElement('p');
-    p.insert(0, [new Y.XmlText(versionRow.content_text)]);
-    frag.insert(0, [p]);
-  }
 
-  // 3. Apply historical state to room.doc inside a transaction
-  // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
-  room.doc.transact(() => {
-    applyHistoricalDocToRoomDoc(room.doc, histDoc);
+    // 2. Load historical snapshot bytes
+    const snapshotBytes = await loadVersionSnapshot(documentId, versionNumber);
+    const histDoc = new Y.Doc();
+
+    if (snapshotBytes && snapshotBytes.length > 0) {
+      try {
+        Y.applyUpdate(histDoc, snapshotBytes);
+      } catch (err) {
+        console.error(`[collab-server] Corrupt version snapshot for doc ${documentId} v${versionNumber}:`, err);
+        throw new Error('Historical version snapshot is corrupt or invalid');
+      }
+    } else if (versionRow.content_text !== null && versionRow.content_text !== undefined) {
+      // Fallback for legacy checkpoints created before full snapshot storage
+      const frag = histDoc.getXmlFragment('default');
+      const p = new Y.XmlElement('p');
+      p.insert(0, [new Y.XmlText(versionRow.content_text)]);
+      frag.insert(0, [p]);
+    }
+
+    const restoredBytes = Y.encodeStateAsUpdate(histDoc);
+    const restoredTitle = versionRow.title || 'Untitled';
+    const contentText = extractSearchableText(histDoc);
+
+    const room = rooms.get(documentId);
+
+    if (room) {
+      // CASE 1: ACTIVE ROOM RESTORE
+      // Apply historical state to room.doc inside a transaction
+      // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
+      room.doc.transact(() => {
+        applyHistoricalDocToRoomDoc(room.doc, histDoc);
+      });
+
+      // Force immediate durable persistence of restored state using existing T3 sequencing
+      await flushRoomPersistence(room);
+
+      // Create NEW version checkpoint capturing restored state with trigger = 'restore'
+      const finalRestoredBytes = Y.encodeStateAsUpdate(room.doc);
+      const finalContentText = extractSearchableText(room.doc);
+
+      return await withSystemContext(async (systemDb) => {
+        const maxRes = await systemDb
+          .selectFrom('document_versions')
+          .where('document_id', '=', documentId)
+          .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+          .executeTakeFirst();
+
+        const nextVersion = Number(maxRes?.max_ver || 0) + 1;
+
+        // Save version snapshot for new checkpoint (fail closed if storage fails)
+        const versionKey = await saveVersionSnapshot(documentId, nextVersion, finalRestoredBytes);
+
+        const newVersion = await systemDb
+          .insertInto('document_versions')
+          .values({
+            document_id: documentId,
+            version_number: nextVersion,
+            snapshot_key: versionKey,
+            title: restoredTitle,
+            content_text: finalContentText,
+            created_by: userId,
+            trigger: 'restore',
+          })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        const updatedDoc = await systemDb
+          .updateTable('documents')
+          .set({
+            title: restoredTitle,
+            content_text: finalContentText,
+            snapshot_key: versionKey,
+            snapshot_version: nextVersion,
+            updated_at: new Date(),
+          })
+          .where('id', '=', documentId)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        await systemDb
+          .insertInto('audit_events')
+          .values({
+            workspace_id: updatedDoc.workspace_id,
+            actor_id: userId,
+            action: 'document.version.restored',
+            resource_type: 'document',
+            resource_id: documentId,
+            metadata: JSON.stringify({
+              restoredVersionNumber: versionNumber,
+              newVersionNumber: nextVersion,
+            }),
+            ip_address: null,
+            user_agent: null,
+          })
+          .execute();
+
+        return {
+          document: updatedDoc,
+          newVersion,
+        };
+      });
+    } else {
+      // CASE 2: ROOM-LESS RESTORE (under the exact same document lock)
+      // 1. Persist restored state to MinIO recovery snapshot (latest.yjs)
+      // Any waiting or future getOrCreateRoom() will hydrate directly from this restored state!
+      const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes);
+
+      return await withSystemContext(async (systemDb) => {
+        const maxRes = await systemDb
+          .selectFrom('document_versions')
+          .where('document_id', '=', documentId)
+          .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+          .executeTakeFirst();
+
+        const nextVersion = Number(maxRes?.max_ver || 0) + 1;
+
+        // Save version snapshot for new checkpoint (fail closed if storage fails)
+        const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+
+        const updatedDoc = await systemDb
+          .updateTable('documents')
+          .set({
+            title: restoredTitle,
+            content_text: contentText,
+            snapshot_key: recoveryKey || versionKey,
+            snapshot_version: nextVersion,
+            updated_at: new Date(),
+          })
+          .where('id', '=', documentId)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        const newVersion = await systemDb
+          .insertInto('document_versions')
+          .values({
+            document_id: documentId,
+            version_number: nextVersion,
+            snapshot_key: versionKey,
+            title: restoredTitle,
+            content_text: contentText,
+            created_by: userId,
+            trigger: 'restore',
+          })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        await systemDb
+          .insertInto('audit_events')
+          .values({
+            workspace_id: updatedDoc.workspace_id,
+            actor_id: userId,
+            action: 'document.version.restored',
+            resource_type: 'document',
+            resource_id: documentId,
+            metadata: JSON.stringify({
+              restoredVersionNumber: versionNumber,
+              newVersionNumber: nextVersion,
+            }),
+            ip_address: null,
+            user_agent: null,
+          })
+          .execute();
+
+        return {
+          document: updatedDoc,
+          newVersion,
+        };
+      });
+    }
   });
-
-  // 4. Force immediate durable persistence of restored state using existing T3 sequencing
-  await flushRoomPersistence(room);
-
-  // 5. Create NEW version checkpoint capturing restored state with trigger = 'restore'
-  const restoredBytes = Y.encodeStateAsUpdate(room.doc);
-  const contentText = extractSearchableText(room.doc);
-  const restoredTitle = versionRow.title || 'Untitled';
-
-  const result = await withSystemContext(async (systemDb) => {
-    const maxRes = await systemDb
-      .selectFrom('document_versions')
-      .where('document_id', '=', documentId)
-      .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
-      .executeTakeFirst();
-
-    const nextVersion = Number(maxRes?.max_ver || 0) + 1;
-
-    // Save version snapshot for new checkpoint
-    const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
-
-    const newVersion = await systemDb
-      .insertInto('document_versions')
-      .values({
-        document_id: documentId,
-        version_number: nextVersion,
-        snapshot_key: versionKey,
-        title: restoredTitle,
-        content_text: contentText,
-        created_by: userId,
-        trigger: 'restore',
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
-    const updatedDoc = await systemDb
-      .updateTable('documents')
-      .set({
-        title: restoredTitle,
-        content_text: contentText,
-        snapshot_key: versionKey,
-        snapshot_version: nextVersion,
-        updated_at: new Date(),
-      })
-      .where('id', '=', documentId)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
-    await systemDb
-      .insertInto('audit_events')
-      .values({
-        workspace_id: updatedDoc.workspace_id,
-        actor_id: userId,
-        action: 'document.version.restored',
-        resource_type: 'document',
-        resource_id: documentId,
-        metadata: JSON.stringify({
-          restoredVersionNumber: versionNumber,
-          newVersionNumber: nextVersion,
-        }),
-        ip_address: null,
-        user_agent: null,
-      })
-      .execute();
-
-    return {
-      document: updatedDoc,
-      newVersion,
-    };
-  });
-
-  return result;
 }
+
+export const restoreActiveRoom = restoreDocument;

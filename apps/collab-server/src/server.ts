@@ -14,6 +14,7 @@ import { checkCollabServerHealth } from './health';
 import {
   getOrCreateRoom,
   getRoom,
+  restoreDocument,
   restoreActiveRoom,
   addConnectionToRoom,
   removeConnectionFromRoom,
@@ -250,20 +251,12 @@ export function createCollabServer() {
             return;
           }
 
-          // 3. Check active room
-          const room = getRoom(documentId);
-          if (!room) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ hasActiveRoom: false }));
-            return;
-          }
-
-          // 4. Restore active room
-          const result = await restoreActiveRoom(documentId, versionNumber, userId);
+          // 3. Restore document (handles both active-room and room-less under unified document lock)
+          const result = await restoreDocument(documentId, versionNumber, userId);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ hasActiveRoom: true, ...result }));
+          res.end(JSON.stringify(result));
         } catch (err: any) {
-          console.error(`[collab-server] Error restoring active room for ${documentId}:`, err);
+          console.error(`[collab-server] Error restoring document ${documentId}:`, err);
           const status = err.message === 'Version not found' ? 404 : 500;
           res.writeHead(status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message || 'Restore error' }));

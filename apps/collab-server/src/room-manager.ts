@@ -7,7 +7,7 @@ import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { sql } from 'kysely';
 import { withSystemContext } from '@knowledge/database';
-import { withDistributedLock } from '@knowledge/redis';
+import { withDistributedLock, LockContext, LockOptions } from '@knowledge/redis';
 import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot } from '@knowledge/storage';
 import {
   loadRoomSnapshot,
@@ -157,8 +157,12 @@ export async function flushRoomPersistence(room: Room): Promise<void> {
 
 const rooms = new Map<string, Room>();
 
-export async function withDocumentLock<T>(documentId: string, fn: () => Promise<T>): Promise<T> {
-  return await withDistributedLock(`document:${documentId}`, fn);
+export async function withDocumentLock<T>(
+  documentId: string,
+  fn: (lockContext?: LockContext) => Promise<T>,
+  options?: LockOptions
+): Promise<T> {
+  return await withDistributedLock(`document:${documentId}`, fn, options);
 }
 
 export async function getOrCreateRoom(documentId: string): Promise<Room> {
@@ -385,7 +389,7 @@ export async function restoreDocument(
   versionNumber: number,
   userId: string,
 ): Promise<{ document: any; newVersion: any }> {
-  return await withDocumentLock(documentId, async () => {
+  return await withDocumentLock(documentId, async (lockContext) => {
     // 1. Fetch historical version row from database
     const versionRow = await withSystemContext(async (systemDb) => {
       return systemDb
@@ -435,6 +439,9 @@ export async function restoreDocument(
 
       // Force immediate durable persistence of restored state using existing T3 sequencing
       await flushRoomPersistence(room);
+
+      // Verify lock ownership before committing checkpoint to DB
+      await lockContext?.verifyOwnership();
 
       // Create NEW version checkpoint capturing restored state with trigger = 'restore'
       const finalRestoredBytes = Y.encodeStateAsUpdate(room.doc);
@@ -506,6 +513,9 @@ export async function restoreDocument(
       // 1. Persist restored state to MinIO recovery snapshot (latest.yjs)
       // Any waiting or future getOrCreateRoom() will hydrate directly from this restored state!
       const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes);
+
+      // Verify lock ownership before committing checkpoint to DB
+      await lockContext?.verifyOwnership();
 
       return await withSystemContext(async (systemDb) => {
         const maxRes = await systemDb

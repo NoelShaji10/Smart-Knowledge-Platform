@@ -26,6 +26,7 @@ import * as database from '@knowledge/database';
 import request from 'supertest';
 import { createCollabServer, verifyUserCanEditDocument } from './server';
 import { getEnv } from '@knowledge/config';
+import * as redisModule from '@knowledge/redis';
 
 class MockWebSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
@@ -690,6 +691,28 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       expect(res1.status).toBe(200);
       expect(res2.status).toBe(200);
       expect(res1.body.newVersion.version_number).not.toBe(res2.body.newVersion.version_number);
+    });
+
+    it('aborts restore and fails closed if lock ownership is lost during execution', async () => {
+      clearAllRooms();
+      const redis = redisModule.getRedisClient();
+
+      // Hook into saveRecoverySnapshot to delete lock mid-flight
+      const originalSave = storage.saveRecoverySnapshot;
+      vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId, data) => {
+        // Delete the document lock in Redis while the restore is in-flight
+        await redis.del(`lock:document:${dId}`);
+        return originalSave(dId, data);
+      });
+
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      // Must fail closed with 500 Lock ownership lost error
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain('Lock ownership lost');
     });
   });
 });

@@ -278,6 +278,120 @@ describe('Production Redis Distributed Lease & Lock Semantics', () => {
     expect(overlapDetected).toBe(false);
     expect(activeInstances.length).toBe(0);
   });
+
+  it('9. outer withDistributedLock promise does not settle while inner fn is still executing', async () => {
+    const key = `settlement-test-${Date.now()}`;
+    let innerSettled = false;
+    let outerSettled = false;
+    let outerSettledBeforeInner = false;
+
+    const promise = withDistributedLock(
+      key,
+      async (ctx) => {
+        // Sleep 40ms, then delete key
+        await new Promise((r) => setTimeout(r, 40));
+        await redis.del(`lock:${key}`);
+
+        // In-flight work that takes another 160ms to settle
+        await new Promise((r) => setTimeout(r, 160));
+        innerSettled = true;
+
+        ctx.assertLockValid();
+      },
+      { ttlMs: 400, renewalIntervalMs: 30 }
+    ).catch((err) => {
+      outerSettled = true;
+      if (!innerSettled) {
+        outerSettledBeforeInner = true;
+      }
+      throw err;
+    });
+
+    await expect(promise).rejects.toThrow(LockLostError);
+    expect(innerSettled).toBe(true);
+    expect(outerSettled).toBe(true);
+    expect(outerSettledBeforeInner).toBe(false);
+  });
+
+  it('10. second owner cannot enter while unfinished work from first owner remains active', async () => {
+    const key = `no-overlap-test-${Date.now()}`;
+    let owner1Active = false;
+    let owner2SawOwner1Active = false;
+
+    // Owner 1 runs and loses its lock, but takes 150ms to finish its current async step
+    const owner1Promise = withDistributedLock(
+      key,
+      async (ctx) => {
+        owner1Active = true;
+        await new Promise((r) => setTimeout(r, 40));
+        // Simulate lock loss
+        await redis.del(`lock:${key}`);
+        // Slow in-flight I/O settling
+        await new Promise((r) => setTimeout(r, 120));
+        owner1Active = false;
+        ctx.assertLockValid();
+      },
+      { ttlMs: 400, renewalIntervalMs: 30 }
+    ).catch(() => 'owner1-failed-closed');
+
+    // Owner 2 tries to acquire the same key
+    const owner2Promise = (async () => {
+      // Slight delay so Owner 1 enters first
+      await new Promise((r) => setTimeout(r, 20));
+      return await withDistributedLock(
+        key,
+        async () => {
+          if (owner1Active) {
+            owner2SawOwner1Active = true;
+          }
+          return 'owner2-done';
+        },
+        { ttlMs: 400, renewalIntervalMs: 50, maxRetries: 50, retryDelayMs: 20 }
+      );
+    })();
+
+    const [res1, res2] = await Promise.all([owner1Promise, owner2Promise]);
+    expect(res1).toBe('owner1-failed-closed');
+    expect(res2).toBe('owner2-done');
+    // Crucial check: Owner 2 must NEVER execute concurrently with Owner 1's unfinished work!
+    expect(owner2SawOwner1Active).toBe(false);
+  });
+
+  it('11. sequential renewal loop never issues overlapping concurrent renewal calls', async () => {
+    const key = `loop-concurrency-${Date.now()}`;
+    let activeRenewals = 0;
+    let maxConcurrentRenewals = 0;
+
+    const evalSpy = vi.spyOn(redis, 'eval').mockImplementation(async (script: any, ...args: any[]) => {
+      if (typeof script === 'string' && script.includes('pexpire')) {
+        activeRenewals++;
+        maxConcurrentRenewals = Math.max(maxConcurrentRenewals, activeRenewals);
+        // Simulate slight network delay
+        await new Promise((r) => setTimeout(r, 30));
+        activeRenewals--;
+        return 1;
+      }
+      // Release script
+      return 1;
+    });
+
+    try {
+      await withDistributedLock(
+        key,
+        async () => {
+          // Wait across multiple renewal iterations
+          await new Promise((r) => setTimeout(r, 200));
+          return 'ok';
+        },
+        { ttlMs: 300, renewalIntervalMs: 30 }
+      );
+
+      expect(maxConcurrentRenewals).toBe(1);
+    } finally {
+      evalSpy.mockRestore();
+    }
+  });
 });
+
 
 

@@ -166,15 +166,17 @@ export async function withDocumentLock<T>(
 }
 
 export async function getOrCreateRoom(documentId: string): Promise<Room> {
-  return await withDocumentLock(documentId, async () => {
+  return await withDocumentLock(documentId, async (lockContext) => {
     let room = rooms.get(documentId);
     if (room) return room;
 
+    lockContext?.assertLockValid();
     const doc = new Y.Doc();
     const connections = new Set<ClientConnection>();
 
     // Hydrate from MinIO recovery snapshot before serving sync requests
     await loadRoomSnapshot(documentId, doc);
+    lockContext?.assertLockValid();
 
     const newRoom: Room = {
       documentId,
@@ -225,6 +227,7 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
       doc.off('update', onDocUpdate);
     };
 
+    lockContext?.assertLockValid();
     rooms.set(documentId, newRoom);
     return newRoom;
   });
@@ -240,10 +243,11 @@ export function removeConnectionFromRoom(room: Room, conn: ClientConnection): vo
 }
 
 export async function removeRoomIfEmpty(documentId: string, lastUserId?: string): Promise<void> {
-  return await withDocumentLock(documentId, async () => {
+  return await withDocumentLock(documentId, async (lockContext) => {
     const room = rooms.get(documentId);
     if (!room || room.connections.size > 0 || room.isClosing) return;
 
+    lockContext?.assertLockValid();
     room.isClosing = true;
 
     if (room.debounceTimer) {
@@ -259,14 +263,19 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
       }
     }
 
+    lockContext?.assertLockValid();
+
     try {
       // 1. Persist final recovery snapshot
       await persistRecoverySnapshot(documentId, room.doc);
+      lockContext?.assertLockValid();
       // 2. Persist session-end version checkpoint
       await createVersionCheckpointOnSessionEnd(documentId, room.doc, lastUserId || room.lastActiveUserId);
     } catch (err) {
       console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
     }
+
+    lockContext?.assertLockValid();
 
     if (room.connections.size === 0) {
       if (room.unbindDocListener) {
@@ -390,8 +399,11 @@ export async function restoreDocument(
   userId: string,
 ): Promise<{ document: any; newVersion: any }> {
   return await withDocumentLock(documentId, async (lockContext) => {
+    lockContext?.assertLockValid();
+
     // 1. Fetch historical version row from database
     const versionRow = await withSystemContext(async (systemDb) => {
+      lockContext?.assertLockValid();
       return systemDb
         .selectFrom('document_versions')
         .where('document_id', '=', documentId)
@@ -400,12 +412,16 @@ export async function restoreDocument(
         .executeTakeFirst();
     });
 
+    lockContext?.assertLockValid();
+
     if (!versionRow) {
       throw new Error('Version not found');
     }
 
     // 2. Load historical snapshot bytes
     const snapshotBytes = await loadVersionSnapshot(documentId, versionNumber);
+    lockContext?.assertLockValid();
+
     const histDoc = new Y.Doc();
 
     if (snapshotBytes && snapshotBytes.length > 0) {
@@ -431,33 +447,43 @@ export async function restoreDocument(
 
     if (room) {
       // CASE 1: ACTIVE ROOM RESTORE
+      lockContext?.assertLockValid();
+
       // Apply historical state to room.doc inside a transaction
       // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
       room.doc.transact(() => {
         applyHistoricalDocToRoomDoc(room.doc, histDoc);
       });
 
+      lockContext?.assertLockValid();
+
       // Force immediate durable persistence of restored state using existing T3 sequencing
       await flushRoomPersistence(room);
+      lockContext?.assertLockValid();
 
       // Verify lock ownership before committing checkpoint to DB
       await lockContext?.verifyOwnership();
+      lockContext?.assertLockValid();
 
       // Create NEW version checkpoint capturing restored state with trigger = 'restore'
       const finalRestoredBytes = Y.encodeStateAsUpdate(room.doc);
       const finalContentText = extractSearchableText(room.doc);
 
       return await withSystemContext(async (systemDb) => {
+        lockContext?.assertLockValid();
+
         const maxRes = await systemDb
           .selectFrom('document_versions')
           .where('document_id', '=', documentId)
           .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
           .executeTakeFirst();
 
+        lockContext?.assertLockValid();
         const nextVersion = Number(maxRes?.max_ver || 0) + 1;
 
         // Save version snapshot for new checkpoint (fail closed if storage fails)
         const versionKey = await saveVersionSnapshot(documentId, nextVersion, finalRestoredBytes);
+        lockContext?.assertLockValid();
 
         const newVersion = await systemDb
           .insertInto('document_versions')
@@ -503,6 +529,8 @@ export async function restoreDocument(
           })
           .execute();
 
+        lockContext?.assertLockValid();
+
         return {
           document: updatedDoc,
           newVersion,
@@ -510,24 +538,32 @@ export async function restoreDocument(
       });
     } else {
       // CASE 2: ROOM-LESS RESTORE (under the exact same document lock)
+      lockContext?.assertLockValid();
+
       // 1. Persist restored state to MinIO recovery snapshot (latest.yjs)
       // Any waiting or future getOrCreateRoom() will hydrate directly from this restored state!
       const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes);
+      lockContext?.assertLockValid();
 
       // Verify lock ownership before committing checkpoint to DB
       await lockContext?.verifyOwnership();
+      lockContext?.assertLockValid();
 
       return await withSystemContext(async (systemDb) => {
+        lockContext?.assertLockValid();
+
         const maxRes = await systemDb
           .selectFrom('document_versions')
           .where('document_id', '=', documentId)
           .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
           .executeTakeFirst();
 
+        lockContext?.assertLockValid();
         const nextVersion = Number(maxRes?.max_ver || 0) + 1;
 
         // Save version snapshot for new checkpoint (fail closed if storage fails)
         const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+        lockContext?.assertLockValid();
 
         const updatedDoc = await systemDb
           .updateTable('documents')
@@ -572,6 +608,8 @@ export async function restoreDocument(
             user_agent: null,
           })
           .execute();
+
+        lockContext?.assertLockValid();
 
         return {
           document: updatedDoc,

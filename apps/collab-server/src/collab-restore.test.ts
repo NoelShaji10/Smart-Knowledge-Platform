@@ -714,5 +714,124 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       expect(res.status).toBe(500);
       expect(res.body.error).toContain('Lock ownership lost');
     });
+
+    it('refuses subsequent database mutations when lock ownership is lost mid-flight', async () => {
+      clearAllRooms();
+      const redis = redisModule.getRedisClient();
+      let dbInsertAttempted = false;
+
+      // Mock saveRecoverySnapshot to delete lock
+      vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async () => {
+        await redis.del(`lock:document:${docId}`);
+        return `snapshots/${docId}/latest.yjs`;
+      });
+
+      // Spy on withSystemContext to check if document_versions insert was attempted after lock loss
+      const originalWithSystem = database.withSystemContext;
+      vi.spyOn(database, 'withSystemContext').mockImplementation(async (fn: any) => {
+        const mockSystemDb = {
+          selectFrom: (table: string) => ({
+            where: () => ({
+              where: () => ({
+                selectAll: () => ({
+                  executeTakeFirst: async () => {
+                    if (table === 'document_versions') {
+                      return {
+                        id: 'ver-1',
+                        document_id: docId,
+                        version_number: 1,
+                        snapshot_key: `versions/${docId}/1.yjs`,
+                        title: 'Test',
+                        content_text: 'Content',
+                        created_by: userId,
+                        trigger: 'manual',
+                        created_at: new Date().toISOString(),
+                      };
+                    }
+                    return null;
+                  },
+                }),
+                select: () => ({
+                  executeTakeFirst: async () => ({ role: 'editor' }),
+                }),
+              }),
+              selectAll: () => ({ executeTakeFirst: async () => null }),
+              select: () => ({
+                executeTakeFirst: async () => {
+                  if (table === 'users') return { id: userId };
+                  if (table === 'documents') return { workspace_id: workspaceId, is_archived: 0 };
+                  if (table === 'document_versions') return { max_ver: 2 };
+                  return null;
+                },
+              }),
+            }),
+          }),
+          insertInto: () => {
+            dbInsertAttempted = true;
+            throw new Error('Should not reach database insert after lock loss!');
+          },
+          updateTable: () => ({
+            set: () => ({
+              where: () => ({
+                returningAll: () => ({ executeTakeFirstOrThrow: async () => ({}) }),
+              }),
+            }),
+          }),
+        };
+        return await fn(mockSystemDb);
+      });
+
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain('Lock ownership lost');
+      expect(dbInsertAttempted).toBe(false);
+    });
+
+    it('prevents second restore from overlapping while first restore aborted work is settling', async () => {
+      clearAllRooms();
+      const redis = redisModule.getRedisClient();
+
+      let firstRestoreActive = false;
+      let secondRestoreOverlapped = false;
+
+      // First restore: loses lock during saveRecoverySnapshot, then takes 80ms to settle
+      vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId, data) => {
+        firstRestoreActive = true;
+        await redis.del(`lock:document:${dId}`);
+        await new Promise((r) => setTimeout(r, 80));
+        firstRestoreActive = false;
+        return `snapshots/${dId}/latest.yjs`;
+      });
+
+      const p1 = request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      // Second restore: runs shortly after p1 starts
+      const p2 = (async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        // Reset saveRecoverySnapshot mock for second caller
+        vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId) => {
+          if (firstRestoreActive) {
+            secondRestoreOverlapped = true;
+          }
+          return `snapshots/${dId}/latest.yjs`;
+        });
+        return await request(server)
+          .post(`/internal/documents/${docId}/restore`)
+          .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+          .send({ versionNumber: 1, userId });
+      })();
+
+      const [res1, res2] = await Promise.all([p1, p2]);
+      expect(res1.status).toBe(500); // First failed closed due to lock loss
+      expect(res2.status).toBe(200); // Second succeeded once first settled
+      expect(secondRestoreOverlapped).toBe(false); // Never overlapped!
+    });
   });
 });

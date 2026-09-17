@@ -200,18 +200,22 @@ export async function withDistributedLock<T>(
 
   // In-process serialization: queues concurrent requests within this process
   const releaseLocal = await localMutex.acquire(resourceKey);
-  let redisLock: DistributedLockHandle | null = null;
-  let heartbeatTimer: NodeJS.Timeout | null = null;
 
-  const abortController = new AbortController();
+  let redisLock: DistributedLockHandle | null = null;
   let isLockActive = false;
-  let isCompleted = false;
+  let isLoopActive = false;
+  let loopTimeout: NodeJS.Timeout | null = null;
   let lockLostError: LockLostError | null = null;
 
-  let rejectLockLost!: (err: LockLostError) => void;
-  const lockLostPromise = new Promise<never>((_, reject) => {
-    rejectLockLost = reject;
-  });
+  const abortController = new AbortController();
+
+  const handleLockLoss = (error: LockLostError) => {
+    if (isLockActive) {
+      isLockActive = false;
+      lockLostError = error;
+      abortController.abort(error);
+    }
+  };
 
   const lockContext: LockContext = {
     get lockId() {
@@ -230,14 +234,63 @@ export async function withDistributedLock<T>(
       }
       const renewed = await renewRedisLock(redisLock, ttlMs);
       if (!renewed) {
-        isLockActive = false;
-        lockLostError = new LockLostError(`Lock ownership lost for resource: ${resourceKey}`);
-        abortController.abort(lockLostError);
-        rejectLockLost(lockLostError);
-        throw lockLostError;
+        const err = new LockLostError(`Lock ownership lost for resource: ${resourceKey}`);
+        handleLockLoss(err);
+        throw err;
       }
     },
     signal: abortController.signal,
+  };
+
+  // Sequential renewal loop: renew -> complete -> wait renewalIntervalMs -> renew
+  let cancelSleep: (() => void) | null = null;
+
+  const cancellableSleep = (ms: number): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      cancelSleep = resolve;
+      loopTimeout = setTimeout(() => {
+        cancelSleep = null;
+        resolve();
+      }, ms);
+    });
+  };
+
+  const wakeSleep = () => {
+    if (loopTimeout) {
+      clearTimeout(loopTimeout);
+      loopTimeout = null;
+    }
+    if (cancelSleep) {
+      const cb = cancelSleep;
+      cancelSleep = null;
+      cb();
+    }
+  };
+
+  let renewalLoopPromise: Promise<void> | null = null;
+  const startRenewalLoop = () => {
+    isLoopActive = true;
+    renewalLoopPromise = (async () => {
+      while (isLoopActive && isLockActive && redisLock) {
+        // Wait renewalIntervalMs before next renewal attempt
+        await cancellableSleep(renewalIntervalMs);
+
+        if (!isLoopActive || !isLockActive || !redisLock) break;
+
+        try {
+          const renewed = await renewRedisLock(redisLock, ttlMs);
+          if (!renewed) {
+            handleLockLoss(new LockLostError(`Lock ownership lost for resource: ${resourceKey}`));
+            break;
+          }
+        } catch (err: any) {
+          handleLockLoss(
+            new LockLostError(`Lock renewal failed for resource: ${resourceKey} (${err?.message})`)
+          );
+          break;
+        }
+      }
+    })();
   };
 
   try {
@@ -245,47 +298,45 @@ export async function withDistributedLock<T>(
     redisLock = await acquireRedisLock(resourceKey, options);
     isLockActive = true;
 
-    // 2. Start lease renewal heartbeat
-    heartbeatTimer = setInterval(async () => {
-      if (isCompleted || !isLockActive || !redisLock) return;
+    // 2. Start sequential lease renewal heartbeat
+    startRenewalLoop();
 
-      try {
-        const renewed = await renewRedisLock(redisLock, ttlMs);
-        if (!renewed && !isCompleted) {
-          isLockActive = false;
-          lockLostError = new LockLostError(`Lock ownership lost for resource: ${resourceKey}`);
-          abortController.abort(lockLostError);
-          rejectLockLost(lockLostError);
-        }
-      } catch (err: any) {
-        if (!isCompleted) {
-          isLockActive = false;
-          lockLostError = new LockLostError(
-            `Lock renewal failed for resource: ${resourceKey} (${err?.message})`
-          );
-          abortController.abort(lockLostError);
-          rejectLockLost(lockLostError);
-        }
-      }
-    }, renewalIntervalMs);
+    // 3. Await fn(lockContext) directly to ensure it settles before releaseLocal is called!
+    let fnResult: T | undefined;
+    let fnError: any = null;
+    let fnThrew = false;
 
-    // 3. Race user execution against lock loss
-    const result = await Promise.race([
-      fn(lockContext),
-      lockLostPromise,
-    ]);
+    try {
+      fnResult = await fn(lockContext);
+    } catch (err) {
+      fnThrew = true;
+      fnError = err;
+    }
 
-    // Ensure lock is still valid before returning
-    lockContext.assertLockValid();
-    return result;
+    // 4. Verify lock validity after execution
+    if (lockLostError || !isLockActive || abortController.signal.aborted) {
+      throw lockLostError || new LockLostError(`Lock ownership lost for resource: ${resourceKey}`);
+    }
+
+    if (fnThrew) {
+      throw fnError;
+    }
+
+    return fnResult as T;
   } finally {
-    isCompleted = true;
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
+    // Stop renewal loop
+    isLoopActive = false;
+    wakeSleep();
+    if (renewalLoopPromise) {
+      try {
+        await renewalLoopPromise;
+      } catch {
+        // Safe handling
+      }
     }
     isLockActive = false;
 
+    // Release Redis lock via Lua (only deletes if current value == lockId)
     if (redisLock) {
       try {
         await releaseRedisLock(redisLock);
@@ -293,6 +344,8 @@ export async function withDistributedLock<T>(
         // Safe exception handling during release
       }
     }
+
+    // Release in-process mutex ONLY AFTER fn has completely settled!
     releaseLocal();
   }
 }

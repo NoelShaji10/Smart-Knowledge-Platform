@@ -4,10 +4,14 @@ import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
+import { sql } from 'kysely';
+import { withSystemContext } from '@knowledge/database';
+import { loadVersionSnapshot, saveVersionSnapshot } from '@knowledge/storage';
 import {
   loadRoomSnapshot,
   persistRecoverySnapshot,
   createVersionCheckpointOnSessionEnd,
+  extractSearchableText,
 } from './snapshot-service';
 
 export const MESSAGE_YJS_SYNC = 0;
@@ -297,4 +301,202 @@ export function clearAllRooms(): void {
   }
   rooms.clear();
   pendingRoomInits.clear();
+}
+
+/**
+ * Apply historical Y.Doc state onto an active target Y.Doc inside an atomic transaction.
+ * Clones shared types (XmlFragment, Text, Array, Map) into targetDoc so Yjs emits standard CRDT delta updates.
+ */
+export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc): void {
+  // 1. Primary Tiptap document fragment ('default')
+  const targetFrag = targetDoc.getXmlFragment('default');
+  const sourceFrag = sourceDoc.getXmlFragment('default');
+
+  targetFrag.delete(0, targetFrag.length);
+  const clonedChildren: (Y.XmlElement | Y.XmlText)[] = [];
+  for (let i = 0; i < sourceFrag.length; i++) {
+    const child = sourceFrag.get(i);
+    clonedChildren.push(child.clone());
+  }
+  if (clonedChildren.length > 0) {
+    targetFrag.insert(0, clonedChildren);
+  }
+
+  // 2. Handle any additional shared types
+  const otherNames = new Set<string>();
+  for (const name of targetDoc.share.keys()) {
+    if (name !== 'default') otherNames.add(name);
+  }
+  for (const name of sourceDoc.share.keys()) {
+    if (name !== 'default') otherNames.add(name);
+  }
+
+  for (const name of otherNames) {
+    const targetType = targetDoc.share.get(name);
+    if (targetType instanceof Y.Text) {
+      const s = sourceDoc.getText(name);
+      targetType.delete(0, targetType.length);
+      const str = s.toString();
+      if (str.length > 0) {
+        targetType.insert(0, str);
+      }
+    } else if (targetType instanceof Y.Array) {
+      const s = sourceDoc.getArray(name);
+      targetType.delete(0, targetType.length);
+      const items: any[] = [];
+      for (let i = 0; i < s.length; i++) {
+        const item = s.get(i) as any;
+        items.push(typeof item?.clone === 'function' ? item.clone() : item);
+      }
+      if (items.length > 0) {
+        targetType.insert(0, items);
+      }
+    } else if (targetType instanceof Y.Map) {
+      const s = sourceDoc.getMap(name);
+      for (const k of targetType.keys()) {
+        targetType.delete(k);
+      }
+      for (const [k, v] of s.entries()) {
+        const val = v as any;
+        targetType.set(k, typeof val?.clone === 'function' ? val.clone() : val);
+      }
+    } else if (targetType instanceof Y.XmlFragment) {
+      const s = sourceDoc.getXmlFragment(name);
+      targetType.delete(0, targetType.length);
+      const children: (Y.XmlElement | Y.XmlText)[] = [];
+      for (let i = 0; i < s.length; i++) {
+        children.push(s.get(i).clone());
+      }
+      if (children.length > 0) {
+        targetType.insert(0, children);
+      }
+    }
+  }
+}
+
+/**
+ * Restore an active room to a historical version.
+ * Applies historical state to room.doc, broadcasts updates to connected clients,
+ * persists the restored state using T3 persistence sequencing, and creates a NEW version checkpoint.
+ */
+export async function restoreActiveRoom(
+  documentId: string,
+  versionNumber: number,
+  userId: string,
+): Promise<{ document: any; newVersion: any } | null> {
+  const room = rooms.get(documentId);
+  if (!room) {
+    return null;
+  }
+
+  // 1. Fetch historical version row from database
+  const versionRow = await withSystemContext(async (systemDb) => {
+    return systemDb
+      .selectFrom('document_versions')
+      .where('document_id', '=', documentId)
+      .where('version_number', '=', versionNumber)
+      .selectAll()
+      .executeTakeFirst();
+  });
+
+  if (!versionRow) {
+    throw new Error('Version not found');
+  }
+
+  // 2. Load historical snapshot bytes
+  const snapshotBytes = await loadVersionSnapshot(documentId, versionNumber);
+  const histDoc = new Y.Doc();
+
+  if (snapshotBytes && snapshotBytes.length > 0) {
+    try {
+      Y.applyUpdate(histDoc, snapshotBytes);
+    } catch (err) {
+      console.error(`[collab-server] Corrupt version snapshot for doc ${documentId} v${versionNumber}:`, err);
+      throw new Error('Historical version snapshot is corrupt or invalid');
+    }
+  } else if (versionRow.content_text !== null && versionRow.content_text !== undefined) {
+    // Fallback for legacy checkpoints created before full snapshot storage
+    const frag = histDoc.getXmlFragment('default');
+    const p = new Y.XmlElement('p');
+    p.insert(0, [new Y.XmlText(versionRow.content_text)]);
+    frag.insert(0, [p]);
+  }
+
+  // 3. Apply historical state to room.doc inside a transaction
+  // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
+  room.doc.transact(() => {
+    applyHistoricalDocToRoomDoc(room.doc, histDoc);
+  });
+
+  // 4. Force immediate durable persistence of restored state using existing T3 sequencing
+  await flushRoomPersistence(room);
+
+  // 5. Create NEW version checkpoint capturing restored state with trigger = 'restore'
+  const restoredBytes = Y.encodeStateAsUpdate(room.doc);
+  const contentText = extractSearchableText(room.doc);
+  const restoredTitle = versionRow.title || 'Untitled';
+
+  const result = await withSystemContext(async (systemDb) => {
+    const maxRes = await systemDb
+      .selectFrom('document_versions')
+      .where('document_id', '=', documentId)
+      .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+      .executeTakeFirst();
+
+    const nextVersion = Number(maxRes?.max_ver || 0) + 1;
+
+    // Save version snapshot for new checkpoint
+    const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+
+    const newVersion = await systemDb
+      .insertInto('document_versions')
+      .values({
+        document_id: documentId,
+        version_number: nextVersion,
+        snapshot_key: versionKey,
+        title: restoredTitle,
+        content_text: contentText,
+        created_by: userId,
+        trigger: 'restore',
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    const updatedDoc = await systemDb
+      .updateTable('documents')
+      .set({
+        title: restoredTitle,
+        content_text: contentText,
+        snapshot_key: versionKey,
+        snapshot_version: nextVersion,
+        updated_at: new Date(),
+      })
+      .where('id', '=', documentId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await systemDb
+      .insertInto('audit_events')
+      .values({
+        workspace_id: updatedDoc.workspace_id,
+        actor_id: userId,
+        action: 'document.version.restored',
+        resource_type: 'document',
+        resource_id: documentId,
+        metadata: JSON.stringify({
+          restoredVersionNumber: versionNumber,
+          newVersionNumber: nextVersion,
+        }),
+        ip_address: null,
+        user_agent: null,
+      })
+      .execute();
+
+    return {
+      document: updatedDoc,
+      newVersion,
+    };
+  });
+
+  return result;
 }

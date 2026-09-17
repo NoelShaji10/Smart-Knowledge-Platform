@@ -226,10 +226,12 @@ export interface DocumentVersion {
   id: string;
   document_id: string;
   version_number: number;
-  snapshot_key: string;
+  snapshot_key: string | null;
   content_text: string;
   title: string;
   created_by: string | null;
+  creator_name?: string | null;
+  creator_email?: string | null;
   trigger: 'manual' | 'auto_interval' | 'session_end' | 'restore';
   created_at: string;
 }

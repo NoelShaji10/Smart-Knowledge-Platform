@@ -232,4 +232,76 @@ describe('Document Versioning Integration Tests', () => {
     // Version numbers must be unique and monotonic [1, 2, 3]
     expect(versionNumbers).toEqual([1, 2, 3]);
   });
+
+  it('prevents restoring versions for archived documents', async () => {
+    if (!isDbConnected) return;
+
+    const scopedAdmin = createScopedDb(adminId);
+    const scopedEditor = createScopedDb(editorId);
+
+    // Create a doc, create a version checkpoint, then archive it
+    const docArchived = await createDocument(scopedAdmin, {
+      workspaceId: workspaceAId,
+      title: 'Archived Restore Doc',
+      contentText: 'V1 Content',
+      createdBy: adminId,
+    });
+
+    await createVersionCheckpoint(scopedEditor, workspaceAId, docArchived.id, editorId, 'manual');
+    await archiveDocument(scopedAdmin, workspaceAId, docArchived.id);
+
+    // Attempting to restore version for archived document fails
+    await expect(
+      restoreVersion(scopedEditor, workspaceAId, docArchived.id, 1, editorId)
+    ).rejects.toThrow('Cannot restore version for an archived document');
+
+    // API returns error
+    const res = await request(app)
+      .post(`/api/v1/workspaces/${workspaceAId}/documents/${docArchived.id}/versions/1/restore`)
+      .set('Authorization', `Bearer ${editorToken}`);
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.body.error).toContain('archived');
+  });
+
+  it('fails safely when attempting to restore non-existent version', async () => {
+    if (!isDbConnected) return;
+
+    const scopedEditor = createScopedDb(editorId);
+
+    await expect(
+      restoreVersion(scopedEditor, workspaceAId, docA1Id, 9999, editorId)
+    ).rejects.toThrow('Version not found');
+
+    const res = await request(app)
+      .post(`/api/v1/workspaces/${workspaceAId}/documents/${docA1Id}/versions/9999/restore`)
+      .set('Authorization', `Bearer ${editorToken}`);
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('rejects cross-workspace restore attempt', async () => {
+    if (!isDbConnected) return;
+
+    // User B from Workspace B tries to restore docA1Id from Workspace A
+    const res = await request(app)
+      .post(`/api/v1/workspaces/${workspaceAId}/documents/${docA1Id}/versions/1/restore`)
+      .set('Authorization', `Bearer ${userBToken}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('verifies historical source version remains immutable after restore', async () => {
+    if (!isDbConnected) return;
+
+    const scopedViewer = createScopedDb(viewerId);
+
+    // Fetch Version 1 after restorations have occurred
+    const v1 = await getDocumentVersion(scopedViewer, workspaceAId, docA1Id, 1);
+    expect(v1).toBeDefined();
+    expect(v1?.version_number).toBe(1);
+    expect(v1?.title).toBe('Version Test Doc V1');
+    expect(v1?.content_text).toBe('Content V1');
+    expect(v1?.trigger).toBe('manual');
+  });
 });

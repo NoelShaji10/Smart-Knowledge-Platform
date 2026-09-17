@@ -12,6 +12,8 @@ import { verifyAndConsumeTicket, TicketData } from './ticket-verifier';
 import { checkCollabServerHealth } from './health';
 import {
   getOrCreateRoom,
+  getRoom,
+  restoreActiveRoom,
   addConnectionToRoom,
   removeConnectionFromRoom,
   removeRoomIfEmpty,
@@ -138,6 +140,45 @@ export function createCollabServer() {
       const health = await checkCollabServerHealth();
       res.writeHead(health.healthy ? 200 : 503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(health));
+      return;
+    }
+
+    const restoreMatch = req.method === 'POST' && req.url?.match(/^\/internal\/documents\/([^/]+)\/restore$/);
+    if (restoreMatch) {
+      const documentId = restoreMatch[1];
+      let bodyStr = '';
+      req.on('data', (chunk) => {
+        bodyStr += chunk;
+      });
+      req.on('end', async () => {
+        try {
+          const body = JSON.parse(bodyStr || '{}');
+          const versionNumber = Number(body.versionNumber);
+          const userId = String(body.userId || '');
+
+          if (!versionNumber || !userId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing versionNumber or userId' }));
+            return;
+          }
+
+          const room = getRoom(documentId);
+          if (!room) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ hasActiveRoom: false }));
+            return;
+          }
+
+          const result = await restoreActiveRoom(documentId, versionNumber, userId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ hasActiveRoom: true, ...result }));
+        } catch (err: any) {
+          console.error(`[collab-server] Error restoring active room for ${documentId}:`, err);
+          const status = err.message === 'Version not found' ? 404 : 500;
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message || 'Restore error' }));
+        }
+      });
       return;
     }
 

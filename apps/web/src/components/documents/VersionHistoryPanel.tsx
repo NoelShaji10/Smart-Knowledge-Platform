@@ -72,8 +72,12 @@ export function VersionHistoryPanel({
       setPreviewVersion(null);
       fetchVersions();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        showToast('Access denied: You do not have permission to restore versions', 'error');
+      if (err instanceof ApiError) {
+        if (err.status === 403) {
+          showToast('Access denied: You do not have permission to restore versions', 'error');
+        } else {
+          showToast(err.message || 'Failed to restore version', 'error');
+        }
       } else {
         showToast('Failed to restore version', 'error');
       }
@@ -109,7 +113,9 @@ export function VersionHistoryPanel({
                 </div>
                 <div className={styles.versionMeta}>
                   Created {new Date(ver.created_at).toLocaleString()}
-                  {ver.created_by && <span> • Author: {ver.created_by}</span>}
+                  {(ver.creator_name || ver.creator_email || ver.created_by) && (
+                    <span> • Author: {ver.creator_name || ver.creator_email || ver.created_by}</span>
+                  )}
                 </div>
                 <div className={styles.versionActions}>
                   <Button variant="ghost" size="sm" onClick={() => setPreviewVersion(ver)}>
@@ -142,7 +148,8 @@ export function VersionHistoryPanel({
                 </h3>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-tertiary)' }}>
                   Created {new Date(previewVersion.created_at).toLocaleString()} via {previewVersion.trigger}
-                  {previewVersion.created_by && ` by ${previewVersion.created_by}`}
+                  {(previewVersion.creator_name || previewVersion.creator_email || previewVersion.created_by) &&
+                    ` by ${previewVersion.creator_name || previewVersion.creator_email || previewVersion.created_by}`}
                 </div>
               </div>
               <Button variant="ghost" size="sm" onClick={() => setPreviewVersion(null)}>

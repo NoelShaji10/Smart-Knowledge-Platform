@@ -69,3 +69,42 @@ export async function saveVersionSnapshot(
   );
   return key;
 }
+
+export async function loadVersionSnapshot(
+  documentId: string,
+  versionNumber: number
+): Promise<Uint8Array | null> {
+  const client = getS3Client();
+  const key = `${documentId}/${versionNumber}.yjs`;
+  try {
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: BUCKET_VERSIONS,
+        Key: key,
+      })
+    );
+    if (!response.Body) return null;
+
+    if (typeof (response.Body as any).transformToByteArray === 'function') {
+      return await (response.Body as any).transformToByteArray();
+    }
+
+    const stream = response.Body as Readable;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return new Uint8Array(Buffer.concat(chunks));
+  } catch (err: any) {
+    const isNotFound =
+      err.name === 'NoSuchKey' ||
+      err.name === 'NotFound' ||
+      err.code === 'NoSuchKey' ||
+      err.$metadata?.httpStatusCode === 404;
+
+    if (isNotFound) {
+      return null;
+    }
+    throw err;
+  }
+}

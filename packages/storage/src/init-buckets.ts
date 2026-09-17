@@ -12,7 +12,16 @@ export async function ensureBucketsExist(): Promise<void> {
       try {
         await client.send(new CreateBucketCommand({ Bucket: bucket }));
       } catch (err: any) {
-        console.error(`Failed to create bucket ${bucket}:`, err?.message);
+        const isAlreadyExists =
+          err?.name === 'BucketAlreadyOwnedByYou' ||
+          err?.name === 'BucketAlreadyExists' ||
+          err?.code === 'BucketAlreadyOwnedByYou' ||
+          err?.code === 'BucketAlreadyExists';
+
+        if (!isAlreadyExists) {
+          console.error(`Failed to create bucket ${bucket}:`, err?.message || err);
+          throw err;
+        }
       }
     }
   }

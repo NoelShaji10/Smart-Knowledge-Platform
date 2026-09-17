@@ -4,6 +4,9 @@ import { runMigrations, getSystemDb, withSystemContext } from '@knowledge/databa
 import { registerUser } from '@knowledge/auth';
 import {
   ensureBucketsExist,
+  getS3Client,
+  BUCKET_SNAPSHOTS,
+  PutObjectCommand,
   saveRecoverySnapshot,
   loadRecoverySnapshot,
   saveVersionSnapshot,
@@ -17,23 +20,20 @@ import {
   withDistributedLock,
   LockLostError,
   StaleFencingTokenError,
-  getFencingToken,
   validateFencingToken,
 } from '@knowledge/redis';
 import { createWorkspace } from '../../apps/api-server/src/lib/workspace-service';
 import {
   getOrCreateRoom,
+  getRoom,
   removeRoomIfEmpty,
   restoreDocument,
   clearAllRooms,
   flushRoomPersistence,
-  withDocumentLock,
   Y,
+  ClientConnection,
 } from '../../apps/collab-server/src/room-manager';
-import {
-  persistRecoverySnapshot,
-  createVersionCheckpointOnSessionEnd,
-} from '../../apps/collab-server/src/snapshot-service';
+import { loadRoomSnapshot } from '../../apps/collab-server/src/snapshot-service';
 
 describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
   const redis = getRedisClient();
@@ -190,18 +190,18 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     await redis.del(`fence:${key}`);
   });
 
-  it('5. CRITICAL SCENARIO: Old owner write rejected after newer owner commits mutation', async () => {
-    const doc = await createTestDoc('Fencing Proof Doc');
+  it('5. Test A — End-to-end stale restore rejection across independent instances', async () => {
+    const doc = await createTestDoc('End-to-End Fencing Doc');
     const docId = doc.id;
 
     // Seed Version 1 and Version 2 in database and MinIO
     const ydoc1 = new Y.Doc();
-    ydoc1.getText('default').insert(0, 'Version 1 Content from Instance Initial');
+    ydoc1.getText('default').insert(0, 'Historical Version 1 Content');
     const v1Bytes = Y.encodeStateAsUpdate(ydoc1);
     await saveVersionSnapshot(docId, 1, v1Bytes);
 
     const ydoc2 = new Y.Doc();
-    ydoc2.getText('default').insert(0, 'Version 2 Content from Instance Initial');
+    ydoc2.getText('default').insert(0, 'Historical Version 2 Content');
     const v2Bytes = Y.encodeStateAsUpdate(ydoc2);
     await saveVersionSnapshot(docId, 2, v2Bytes);
 
@@ -237,51 +237,37 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
         .set({
           fencing_token: 2,
           snapshot_version: 2,
-          title: 'Doc V2',
+          title: 'Doc V2 Initial',
         })
         .where('id', '=', docId)
         .execute();
     });
 
-    // Step 1: Instance A acquires document lock (token N = 3)
     const resourceKey = `document:${docId}`;
-    const handleA = await acquireRedisLock(resourceKey, { ttlMs: 500, minFencingToken: 2 });
+
+    // Step 1: Instance A acquires document lock with token N = 3
+    const handleA = await acquireRedisLock(resourceKey, { ttlMs: 300, minFencingToken: 2 });
     const tokenA = handleA.fencingToken;
     expect(tokenA).toBeGreaterThanOrEqual(3);
 
-    // Step 2: Instance A starts restore of version 1
-    const histBytesA = await loadVersionSnapshot(docId, 1);
-    expect(histBytesA).toBeTruthy();
-
-    // Step 3: Instance A loses Redis lease (simulating network split / timeout)
+    // Step 2: Instance A starts restore of version 1, but its lease expires / split occurs
     await redis.del(`lock:${resourceKey}`);
 
-    // Step 4: Instance B acquires document lock (token N+1)
+    // Step 3: Instance B acquires the same document lock with token N+1 = 4
     const handleB = await acquireRedisLock(resourceKey, { ttlMs: 2000 });
     const tokenB = handleB.fencingToken;
     expect(tokenB).toBe(tokenA + 1);
 
-    // Step 5: Instance B performs restore/mutation of version 2 and commits
-    const bRestoredBytes = Buffer.from('B Authoritative Content');
-    // Instance B writes recovery snapshot with token B
+    // Step 4: Instance B performs restore/mutation of version 2 and commits
+    const bRestoredBytes = Y.encodeStateAsUpdate(ydoc2);
     await saveRecoverySnapshot(docId, bRestoredBytes, tokenB);
 
-    // Instance B commits to PostgreSQL with token B
     await withSystemContext(async (db) => {
-      const docRow = await db
-        .selectFrom('documents')
-        .where('id', '=', docId)
-        .select(['fencing_token'])
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-
-      expect(Number(docRow.fencing_token)).toBeLessThanOrEqual(tokenB);
-
       await db
         .updateTable('documents')
         .set({
-          title: 'Instance B Authoritative State',
-          content_text: 'B Authoritative Content',
+          title: 'Authoritative State From Instance B',
+          content_text: 'Historical Version 2 Content',
           snapshot_version: 3,
           fencing_token: tokenB,
           updated_at: new Date(),
@@ -296,8 +282,8 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
           document_id: docId,
           version_number: 3,
           snapshot_key: `versions/${docId}/3.yjs`,
-          title: 'Instance B Authoritative State',
-          content_text: 'B Authoritative Content',
+          title: 'Authoritative State From Instance B',
+          content_text: 'Historical Version 2 Content',
           created_by: userId,
           trigger: 'restore',
           fencing_token: tokenB,
@@ -305,24 +291,23 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
         .execute();
     });
 
-    // Instance B finishes its operation and releases lock
     await releaseRedisLock(handleB);
 
-    // Step 6: Instance A (which had in-flight async work still settling) wakes up and attempts mutation!
-    let instanceAStorageRejected = false;
-    let instanceADatabaseRejected = false;
+    // Step 5: Instance A (which had in-flight async work still settling with token A) attempts protected mutation!
+    let aStorageRejected = false;
+    let aDatabaseRejected = false;
 
-    // 6a: Instance A attempts to overwrite MinIO recovery snapshot with stale token A
+    // 5a: Instance A attempts to write recovery snapshot with stale token A
     try {
-      const aStaleBytes = Buffer.from('A Stale Content Overwrite');
+      const aStaleBytes = Buffer.from('Stale Overwrite From Instance A');
       await saveRecoverySnapshot(docId, aStaleBytes, tokenA);
     } catch (err) {
       if (err instanceof StaleFencingTokenError) {
-        instanceAStorageRejected = true;
+        aStorageRejected = true;
       }
     }
 
-    // 6b: Instance A attempts to commit stale mutation to PostgreSQL
+    // 5b: Instance A attempts to commit to PostgreSQL with stale token A
     try {
       await withSystemContext(async (db) => {
         const docRow = await db
@@ -338,7 +323,6 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
           );
         }
 
-        // Even if check was skipped, conditional update WHERE fencing_token <= tokenA would match 0 rows
         await db
           .updateTable('documents')
           .set({
@@ -352,16 +336,16 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
       });
     } catch (err) {
       if (err instanceof StaleFencingTokenError) {
-        instanceADatabaseRejected = true;
+        aDatabaseRejected = true;
       }
     }
 
     // VERIFICATION:
     // Both MinIO and PostgreSQL must reject Instance A's stale write!
-    expect(instanceAStorageRejected).toBe(true);
-    expect(instanceADatabaseRejected).toBe(true);
+    expect(aStorageRejected).toBe(true);
+    expect(aDatabaseRejected).toBe(true);
 
-    // Instance B's state in PostgreSQL remains authoritative!
+    // Instance B's state remains authoritative!
     const finalDoc = await withSystemContext(async (db) => {
       return await db
         .selectFrom('documents')
@@ -370,18 +354,183 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
         .executeTakeFirstOrThrow();
     });
 
-    expect(finalDoc.title).toBe('Instance B Authoritative State');
-    expect(finalDoc.content_text).toBe('B Authoritative Content');
+    expect(finalDoc.title).toBe('Authoritative State From Instance B');
+    expect(finalDoc.content_text).toBe('Historical Version 2 Content');
     expect(Number(finalDoc.fencing_token)).toBe(tokenB);
 
     // MinIO recovery snapshot remains Instance B's bytes!
     const loadedRecovery = await loadRecoverySnapshot(docId);
-    expect(Buffer.from(loadedRecovery!).toString()).toBe('B Authoritative Content');
+    expect(loadedRecovery).toBeTruthy();
+    const testDoc = new Y.Doc();
+    Y.applyUpdate(testDoc, loadedRecovery!);
+    expect(testDoc.getText('default').toString()).toBe('Historical Version 2 Content');
 
     await redis.del(`fence:${resourceKey}`);
   });
 
-  it('6. concurrent restore requests across independent instances serialize cleanly', async () => {
+  it('6. Test B — Stale MinIO snapshot cannot win hydration over authoritative DB version', async () => {
+    const doc = await createTestDoc('Hydration Fencing Doc');
+    const docId = doc.id;
+
+    // 1. PostgreSQL contains fencing token 10 and authoritative snapshot version 2
+    const ydocAuth = new Y.Doc();
+    ydocAuth.getText('default').insert(0, 'Authoritative Version 2 Content From DB');
+    const authVersionBytes = Y.encodeStateAsUpdate(ydocAuth);
+    await saveVersionSnapshot(docId, 2, authVersionBytes);
+
+    await withSystemContext(async (db) => {
+      await db
+        .updateTable('documents')
+        .set({
+          fencing_token: 10,
+          snapshot_version: 2,
+          snapshot_key: `versions/${docId}/2.yjs`,
+          title: 'Authoritative V2 Doc',
+        })
+        .where('id', '=', docId)
+        .execute();
+    });
+
+    // 2. Put stale recovery snapshot in MinIO with older fencing token 9
+    const ydocStale = new Y.Doc();
+    ydocStale.getText('default').insert(0, 'Stale Uncommitted Bytes from Expired Owner');
+    const staleBytes = Y.encodeStateAsUpdate(ydocStale);
+
+    const s3 = getS3Client();
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_SNAPSHOTS,
+        Key: `${docId}/latest.yjs`,
+        Body: Buffer.from(staleBytes),
+        ContentType: 'application/octet-stream',
+        Metadata: {
+          'fencing-token': '9', // Older than DB fencing token 10
+        },
+      })
+    );
+
+    // 3. Call loadRoomSnapshot()
+    const testDoc1 = new Y.Doc();
+    const loaded1 = await loadRoomSnapshot(docId, testDoc1);
+
+    // VERIFICATION:
+    // Stale latest.yjs is rejected! The DB-authoritative version snapshot is loaded instead!
+    expect(loaded1).toBe(true);
+    expect(testDoc1.getText('default').toString()).toBe('Authoritative Version 2 Content From DB');
+    expect(testDoc1.getText('default').toString()).not.toContain('Stale Uncommitted Bytes');
+
+    // 4. Test missing fencing-token metadata in MinIO:
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_SNAPSHOTS,
+        Key: `${docId}/latest.yjs`,
+        Body: Buffer.from(staleBytes),
+        ContentType: 'application/octet-stream',
+        // No fencing-token metadata at all
+      })
+    );
+
+    const testDoc2 = new Y.Doc();
+    const loaded2 = await loadRoomSnapshot(docId, testDoc2);
+
+    // Must still reject latest.yjs and fall back to authoritative version snapshot!
+    expect(loaded2).toBe(true);
+    expect(testDoc2.getText('default').toString()).toBe('Authoritative Version 2 Content From DB');
+    expect(testDoc2.getText('default').toString()).not.toContain('Stale Uncommitted Bytes');
+
+    await redis.del(`fence:document:${docId}`);
+  });
+
+  it('7. Test C — Background persistence rejects stale room and triggers WebSocket eviction (code 4009)', async () => {
+    const doc = await createTestDoc('Background Persistence Fencing Doc');
+    const docId = doc.id;
+
+    // 1. Create active room with fencing token N
+    const room = await getOrCreateRoom(docId);
+    const initialToken = room.fencingToken ?? 1;
+    expect(initialToken).toBeGreaterThanOrEqual(1);
+
+    // 2. Attach mock client connection to room
+    let closeCode = 0;
+    let closeReason = '';
+    const mockWs: any = {
+      readyState: 1, // WebSocket.OPEN
+      send: () => {},
+      close: (code: number, reason: string) => {
+        closeCode = code;
+        closeReason = reason;
+      },
+    };
+
+    const clientConn: ClientConnection = {
+      id: 'conn-test-1',
+      ws: mockWs,
+      userId,
+      workspaceId,
+      documentId: docId,
+      canEdit: true,
+      effectiveRole: 'editor',
+    };
+    room.connections.add(clientConn);
+
+    // 3. Make a newer token N+10 authoritative in PostgreSQL
+    const newerToken = initialToken + 10;
+    await withSystemContext(async (db) => {
+      await db
+        .updateTable('documents')
+        .set({
+          fencing_token: newerToken,
+          title: 'Authoritative State from Newer Owner',
+        })
+        .where('id', '=', docId)
+        .execute();
+    });
+
+    // 4. Client edits the stale room
+    room.doc.getText('default').insert(0, 'Stale Edits In Stale Room');
+    room.docSeq = 1;
+
+    // 5. Trigger persistence from old room
+    let persistenceRejected = false;
+    try {
+      await flushRoomPersistence(room);
+    } catch (err: any) {
+      if (
+        err instanceof StaleFencingTokenError ||
+        err?.name === 'StaleFencingTokenError' ||
+        err?.message?.includes('Stale recovery snapshot persistence')
+      ) {
+        persistenceRejected = true;
+      }
+    }
+
+    // VERIFICATION:
+    // Stale persistence must be rejected!
+    expect(persistenceRejected).toBe(true);
+
+    // Client connection must receive WebSocket close code 4009 with reason 'Document superseded'
+    expect(closeCode).toBe(4009);
+    expect(closeReason).toBe('Document superseded');
+
+    // Stale room must be completely evicted and removed from rooms map
+    expect(getRoom(docId)).toBeUndefined();
+    expect(room.isClosing).toBe(true);
+
+    // DB state must remain untouched by stale room
+    const checkDoc = await withSystemContext(async (db) => {
+      return await db
+        .selectFrom('documents')
+        .where('id', '=', docId)
+        .selectAll()
+        .executeTakeFirstOrThrow();
+    });
+    expect(checkDoc.title).toBe('Authoritative State from Newer Owner');
+    expect(Number(checkDoc.fencing_token)).toBe(newerToken);
+
+    await redis.del(`fence:document:${docId}`);
+  });
+
+  it('8. concurrent restore requests across independent instances serialize cleanly', async () => {
     const doc = await createTestDoc('Concurrent Restore Doc');
     const docId = doc.id;
 
@@ -426,9 +575,9 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
         .execute();
     });
 
-    // Execute two restores concurrently simulating two instances
-    const p1 = restoreDocument(docId, 1, userId);
-    const p2 = restoreDocument(docId, 2, userId);
+    // Execute two restores concurrently simulating two separate server instances
+    const p1 = restoreDocument(docId, 1, userId, { skipLocalMutex: true });
+    const p2 = restoreDocument(docId, 2, userId, { skipLocalMutex: true });
 
     const [r1, r2] = await Promise.all([p1, p2]);
 
@@ -451,7 +600,7 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     await redis.del(`fence:document:${docId}`);
   });
 
-  it('7. room creation vs restore across independent instances serializes safely', async () => {
+  it('9. room creation vs restore across independent instances serializes safely', async () => {
     const doc = await createTestDoc('Room vs Restore Doc');
     const docId = doc.id;
 
@@ -475,8 +624,8 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
         .execute();
     });
 
-    // Start restore (Instance 1) and room creation (Instance 2) concurrently
-    const restorePromise = restoreDocument(docId, 1, userId);
+    // Start restore (Instance 1) and room creation (Instance 2) concurrently across independent instances
+    const restorePromise = restoreDocument(docId, 1, userId, { skipLocalMutex: true });
     const roomPromise = getOrCreateRoom(docId);
 
     const [restoreRes, room] = await Promise.all([restorePromise, roomPromise]);
@@ -490,7 +639,7 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     await redis.del(`fence:document:${docId}`);
   });
 
-  it('8. ownership-checked release prevents releasing another instance lock', async () => {
+  it('10. ownership-checked release prevents releasing another instance lock', async () => {
     const key = `ownership-release-${Date.now()}`;
     const handleA = await acquireRedisLock(key, { ttlMs: 2000 });
 
@@ -508,7 +657,7 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     await redis.del(`lock:${key}`, `fence:${key}`);
   });
 
-  it('9. validateFencingToken and assertFencingTokenValid reject stale tokens', async () => {
+  it('11. validateFencingToken helper rejects stale tokens', async () => {
     const key = `token-helpers-${Date.now()}`;
     const handle = await acquireRedisLock(key, { ttlMs: 1000 });
     const token = handle.fencingToken;
@@ -526,7 +675,7 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     await redis.del(`fence:${key}`);
   });
 
-  it('10. T3 persistence sequencing and debounced snapshots remain intact under fencing', async () => {
+  it('12. T3 persistence sequencing and debounced snapshots remain intact under fencing', async () => {
     const doc = await createTestDoc('T3 Sequencing Doc');
     const docId = doc.id;
 

@@ -96,7 +96,64 @@ export function sendPersistence(
   }
 }
 
+const rooms = new Map<string, Room>();
+
+/**
+ * Evict a room immediately on fencing supersession or fatal lock loss:
+ * 1. Mark the room as closing.
+ * 2. Stop/disable further persistence from that room.
+ * 3. Close connected clients with WebSocket code 4009 and reason 'Document superseded'.
+ * 4. Destroy the Yjs document.
+ * 5. Remove the room from the rooms map.
+ * Does NOT trigger any further persistence writes.
+ */
+export function evictRoom(room: Room, reason = 'Document superseded'): void {
+  if (room.isClosing) return;
+  room.isClosing = true;
+
+  // 1. Cancel pending debounce timer
+  if (room.debounceTimer) {
+    clearTimeout(room.debounceTimer);
+    room.debounceTimer = null;
+  }
+
+  // 2. Unbind doc listener so updates cannot trigger persistence
+  if (room.unbindDocListener) {
+    room.unbindDocListener();
+    room.unbindDocListener = undefined;
+  }
+
+  // 3. Close all client WebSockets with code 4009
+  for (const conn of room.connections) {
+    if (conn.ws.readyState === 1 /* WebSocket.OPEN */) {
+      try {
+        conn.ws.close(4009, reason);
+      } catch {
+        // Safe socket error handling
+      }
+    }
+  }
+  room.connections.clear();
+
+  // 4. Cancel any queued persistence
+  room.queuedPersistenceSeq = null;
+
+  // 5. Destroy Yjs document
+  try {
+    room.doc.destroy();
+  } catch {
+    // Safe destruction handling
+  }
+
+  // 6. Evict from rooms Map
+  rooms.delete(room.documentId);
+}
+
 export function queueRoomPersistence(room: Room): Promise<void> {
+  if (room.isClosing) {
+    return Promise.resolve();
+  }
+
   if (room.debounceTimer) {
     clearTimeout(room.debounceTimer);
     room.debounceTimer = null;
@@ -114,7 +171,7 @@ export function queueRoomPersistence(room: Room): Promise<void> {
   if (room.inFlightPersistence) {
     room.queuedPersistenceSeq = Math.max(room.queuedPersistenceSeq || 0, targetSeq);
     return room.inFlightPersistence.then(() => {
-      if ((room.lastPersistedSeq || 0) >= targetSeq) {
+      if ((room.lastPersistedSeq || 0) >= targetSeq || room.isClosing) {
         return;
       }
       return queueRoomPersistence(room);
@@ -129,14 +186,26 @@ export function queueRoomPersistence(room: Room): Promise<void> {
       await persistRecoverySnapshot(room.documentId, room.doc, room.fencingToken);
       room.lastPersistedSeq = Math.max(room.lastPersistedSeq, seqToPersist);
       broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
-    } catch (err) {
+    } catch (err: any) {
       console.error(`[collab-server] Snapshot error for ${room.documentId}:`, err);
       const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
       broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
+
+      // Blocker 3: If snapshot persistence fails with StaleFencingTokenError or LockLostError:
+      // Immediately evict the room, close WebSockets with code 4009, destroy doc, and remove from rooms!
+      if (
+        err instanceof StaleFencingTokenError ||
+        err?.name === 'StaleFencingTokenError' ||
+        err?.name === 'LockLostError'
+      ) {
+        evictRoom(room, 'Document superseded');
+      }
       throw err;
     } finally {
       room.inFlightPersistence = null;
-      if (room.queuedPersistenceSeq !== null && room.queuedPersistenceSeq !== undefined) {
+      if (room.isClosing) {
+        room.queuedPersistenceSeq = null;
+      } else if (room.queuedPersistenceSeq !== null && room.queuedPersistenceSeq !== undefined) {
         const nextSeq = room.queuedPersistenceSeq;
         room.queuedPersistenceSeq = null;
         if (nextSeq > room.lastPersistedSeq) {
@@ -155,8 +224,6 @@ export function queueRoomPersistence(room: Room): Promise<void> {
 export async function flushRoomPersistence(room: Room): Promise<void> {
   return queueRoomPersistence(room);
 }
-
-const rooms = new Map<string, Room>();
 
 export async function withDocumentLock<T>(
   documentId: string,
@@ -404,6 +471,7 @@ export async function restoreDocument(
   documentId: string,
   versionNumber: number,
   userId: string,
+  options?: LockOptions
 ): Promise<{ document: any; newVersion: any }> {
   return await withDocumentLock(documentId, async (lockContext) => {
     lockContext?.assertLockValid();
@@ -455,125 +523,148 @@ export async function restoreDocument(
 
     if (room) {
       // CASE 1: ACTIVE ROOM RESTORE
-      lockContext?.assertLockValid();
-
-      // Check fencing token against in-memory room
-      if (fencingToken > 0 && room.fencingToken !== undefined && room.fencingToken > fencingToken) {
-        throw new StaleFencingTokenError(
-          `Stale active room restore for ${documentId}: token ${fencingToken} < room token ${room.fencingToken}`
-        );
-      }
-      room.fencingToken = fencingToken;
-
-      // Apply historical state to room.doc inside a transaction
-      // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
-      room.doc.transact(() => {
-        applyHistoricalDocToRoomDoc(room.doc, histDoc);
-      });
-
-      lockContext?.assertLockValid();
-
-      // Force immediate durable persistence of restored state using existing T3 sequencing
-      await flushRoomPersistence(room);
-      lockContext?.assertLockValid();
-
-      // Verify lock ownership before committing checkpoint to DB
-      await lockContext?.verifyOwnership();
-      lockContext?.assertLockValid();
-
-      // Create NEW version checkpoint capturing restored state with trigger = 'restore'
-      const finalRestoredBytes = Y.encodeStateAsUpdate(room.doc);
-      const finalContentText = extractSearchableText(room.doc);
-
-      return await withSystemContext(async (systemDb) => {
+      try {
         lockContext?.assertLockValid();
 
-        // 1. Validate DB fencing token under row lock
-        const docRow = await systemDb
-          .selectFrom('documents')
-          .where('id', '=', documentId)
-          .select(['workspace_id', 'fencing_token'])
-          .forUpdate()
-          .executeTakeFirstOrThrow();
-
-        if (fencingToken > 0 && Number(docRow.fencing_token || 0) > fencingToken) {
+        // Check fencing token against in-memory room
+        if (fencingToken > 0 && room.fencingToken !== undefined && room.fencingToken > fencingToken) {
           throw new StaleFencingTokenError(
-            `Stale active room restore commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+            `Stale active room restore for ${documentId}: token ${fencingToken} < room token ${room.fencingToken}`
           );
         }
 
-        const maxRes = await systemDb
-          .selectFrom('document_versions')
-          .where('document_id', '=', documentId)
-          .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
-          .executeTakeFirst();
-
-        lockContext?.assertLockValid();
-        const nextVersion = Number(maxRes?.max_ver || 0) + 1;
-
-        // Save version snapshot for new checkpoint (fail closed if storage fails)
-        const versionKey = await saveVersionSnapshot(documentId, nextVersion, finalRestoredBytes);
+        // Verify lock ownership before committing checkpoint to DB
+        await lockContext?.verifyOwnership();
         lockContext?.assertLockValid();
 
-        const newVersion = await systemDb
-          .insertInto('document_versions')
-          .values({
-            document_id: documentId,
-            version_number: nextVersion,
-            snapshot_key: versionKey,
-            title: restoredTitle,
-            content_text: finalContentText,
-            created_by: userId,
-            trigger: 'restore',
-            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-          })
-          .returningAll()
-          .executeTakeFirstOrThrow();
+        // 4 & 5. Perform PostgreSQL fencing validation & commit the restored document/version state FIRST!
+        const dbResult = await withSystemContext(async (systemDb) => {
+          lockContext?.assertLockValid();
 
-        const updatedDoc = await systemDb
-          .updateTable('documents')
-          .set({
-            title: restoredTitle,
-            content_text: finalContentText,
-            snapshot_key: versionKey,
-            snapshot_version: nextVersion,
-            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-            updated_at: new Date(),
-          })
-          .where('id', '=', documentId)
-          .where((eb) => {
-            if (fencingToken > 0) {
-              return eb('fencing_token', '<=', fencingToken);
-            }
-            return eb.val(true);
-          })
-          .returningAll()
-          .executeTakeFirstOrThrow();
+          // 1. Validate DB fencing token under row lock
+          let docQuery = systemDb
+            .selectFrom('documents')
+            .where('id', '=', documentId)
+            .select(['workspace_id', 'fencing_token']);
+          if (typeof (docQuery as any).forUpdate === 'function') {
+            docQuery = (docQuery as any).forUpdate();
+          }
+          const docRow = await docQuery.executeTakeFirstOrThrow();
 
-        await systemDb
-          .insertInto('audit_events')
-          .values({
-            workspace_id: updatedDoc.workspace_id,
-            actor_id: userId,
-            action: 'document.version.restored',
-            resource_type: 'document',
-            resource_id: documentId,
-            metadata: JSON.stringify({
-              restoredVersionNumber: versionNumber,
-              newVersionNumber: nextVersion,
-            }),
-            ip_address: null,
-            user_agent: null,
-          })
-          .execute();
+          if (fencingToken > 0 && Number(docRow.fencing_token || 0) > fencingToken) {
+            throw new StaleFencingTokenError(
+              `Stale active room restore commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+            );
+          }
 
-        lockContext?.assertLockValid();
+          const maxRes = await systemDb
+            .selectFrom('document_versions')
+            .where('document_id', '=', documentId)
+            .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+            .executeTakeFirst();
 
-        return {
-          document: updatedDoc,
-          newVersion,
-        };
-      });
+          lockContext?.assertLockValid();
+          const nextVersion = Number(maxRes?.max_ver || 0) + 1;
+
+          // Save version snapshot for new checkpoint (fail closed if storage fails)
+          const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+          lockContext?.assertLockValid();
+
+          // Save recovery snapshot with fencing token
+          const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+          lockContext?.assertLockValid();
+
+          const newVersion = await systemDb
+            .insertInto('document_versions')
+            .values({
+              document_id: documentId,
+              version_number: nextVersion,
+              snapshot_key: versionKey,
+              title: restoredTitle,
+              content_text: contentText,
+              created_by: userId,
+              trigger: 'restore',
+              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+
+          const updatedDoc = await systemDb
+            .updateTable('documents')
+            .set({
+              title: restoredTitle,
+              content_text: contentText,
+              snapshot_key: recoveryKey || versionKey,
+              snapshot_version: nextVersion,
+              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+              updated_at: new Date(),
+            })
+            .where('id', '=', documentId)
+            .where((eb) => {
+              if (fencingToken > 0) {
+                return eb('fencing_token', '<=', fencingToken);
+              }
+              return eb.val(true);
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+
+          await systemDb
+            .insertInto('audit_events')
+            .values({
+              workspace_id: updatedDoc.workspace_id,
+              actor_id: userId,
+              action: 'document.version.restored',
+              resource_type: 'document',
+              resource_id: documentId,
+              metadata: JSON.stringify({
+                restoredVersionNumber: versionNumber,
+                newVersionNumber: nextVersion,
+              }),
+              ip_address: null,
+              user_agent: null,
+            })
+            .execute();
+
+          lockContext?.assertLockValid();
+
+          return {
+            document: updatedDoc,
+            newVersion,
+          };
+        });
+
+        // 6. Only AFTER the DB transaction succeeds:
+        // Update room fencing token
+        room.fencingToken = fencingToken;
+
+        // Apply historical state to room.doc inside a transaction
+        // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
+        room.doc.transact(() => {
+          applyHistoricalDocToRoomDoc(room.doc, histDoc);
+        });
+
+        if (room.debounceTimer) {
+          clearTimeout(room.debounceTimer);
+          room.debounceTimer = null;
+        }
+        room.lastPersistedSeq = room.docSeq || 0;
+        broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, room.lastPersistedSeq);
+
+        return dbResult;
+      } catch (err: any) {
+        // Failure handling:
+        // If the active-room restore fails because of StaleFencingTokenError or LockLostError:
+        // immediately evict the affected room!
+        if (
+          err instanceof StaleFencingTokenError ||
+          err?.name === 'StaleFencingTokenError' ||
+          err?.name === 'LockLostError'
+        ) {
+          evictRoom(room, 'Document superseded');
+        }
+        throw err;
+      }
     } else {
       // CASE 2: ROOM-LESS RESTORE (under the exact same document lock)
       lockContext?.assertLockValid();
@@ -582,7 +673,7 @@ export async function restoreDocument(
       const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
       lockContext?.assertLockValid();
 
-      // Verify lock ownership before committing checkpoint to DB
+      // 2. Verify lock ownership before committing checkpoint to DB
       await lockContext?.verifyOwnership();
       lockContext?.assertLockValid();
 
@@ -590,12 +681,14 @@ export async function restoreDocument(
         lockContext?.assertLockValid();
 
         // 1. Validate DB fencing token under row lock
-        const docRow = await systemDb
+        let docQuery = systemDb
           .selectFrom('documents')
           .where('id', '=', documentId)
-          .select(['workspace_id', 'fencing_token'])
-          .forUpdate()
-          .executeTakeFirstOrThrow();
+          .select(['workspace_id', 'fencing_token']);
+        if (typeof (docQuery as any).forUpdate === 'function') {
+          docQuery = (docQuery as any).forUpdate();
+        }
+        const docRow = await docQuery.executeTakeFirstOrThrow();
 
         if (fencingToken > 0 && Number(docRow.fencing_token || 0) > fencingToken) {
           throw new StaleFencingTokenError(
@@ -676,7 +769,7 @@ export async function restoreDocument(
         };
       });
     }
-  });
+  }, options);
 }
 
 export const restoreActiveRoom = restoreDocument;

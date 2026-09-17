@@ -3,7 +3,12 @@ import { Readable } from 'stream';
 import { StaleFencingTokenError } from '@knowledge/types';
 import { getS3Client, BUCKET_SNAPSHOTS, BUCKET_VERSIONS } from './client';
 
-export { StaleFencingTokenError };
+export { PutObjectCommand, GetObjectCommand, HeadObjectCommand, StaleFencingTokenError };
+
+export interface RecoverySnapshotResult {
+  data: Uint8Array;
+  fencingToken?: number;
+}
 
 export async function saveRecoverySnapshot(
   documentId: string,
@@ -52,16 +57,17 @@ export async function saveRecoverySnapshot(
       Key: key,
       Body: Buffer.from(data),
       ContentType: 'application/octet-stream',
-      Metadata:
-        fencingToken !== undefined && fencingToken > 0
-          ? { 'fencing-token': String(fencingToken) }
-          : undefined,
+      Metadata: {
+        'fencing-token': String(fencingToken !== undefined && fencingToken > 0 ? fencingToken : 0),
+      },
     })
   );
   return key;
 }
 
-export async function loadRecoverySnapshot(documentId: string): Promise<Uint8Array | null> {
+export async function loadRecoverySnapshotWithMetadata(
+  documentId: string
+): Promise<RecoverySnapshotResult | null> {
   const client = getS3Client();
   const key = `${documentId}/latest.yjs`;
   try {
@@ -73,16 +79,25 @@ export async function loadRecoverySnapshot(documentId: string): Promise<Uint8Arr
     );
     if (!response.Body) return null;
 
+    let data: Uint8Array;
     if (typeof (response.Body as any).transformToByteArray === 'function') {
-      return await (response.Body as any).transformToByteArray();
+      data = await (response.Body as any).transformToByteArray();
+    } else {
+      const stream = response.Body as Readable;
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      data = new Uint8Array(Buffer.concat(chunks));
     }
 
-    const stream = response.Body as Readable;
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return new Uint8Array(Buffer.concat(chunks));
+    const tokenStr = response.Metadata?.['fencing-token'];
+    const fencingToken = tokenStr !== undefined ? parseInt(tokenStr, 10) : undefined;
+
+    return {
+      data,
+      fencingToken: fencingToken !== undefined && !isNaN(fencingToken) ? fencingToken : undefined,
+    };
   } catch (err: any) {
     const isNotFound =
       err.name === 'NoSuchKey' ||
@@ -95,6 +110,11 @@ export async function loadRecoverySnapshot(documentId: string): Promise<Uint8Arr
     }
     throw err;
   }
+}
+
+export async function loadRecoverySnapshot(documentId: string): Promise<Uint8Array | null> {
+  const result = await loadRecoverySnapshotWithMetadata(documentId);
+  return result ? result.data : null;
 }
 
 export async function saveVersionSnapshot(

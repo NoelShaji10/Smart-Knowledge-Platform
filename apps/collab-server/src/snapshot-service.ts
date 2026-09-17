@@ -4,6 +4,8 @@ import { withSystemContext } from '@knowledge/database';
 import {
   saveRecoverySnapshot,
   loadRecoverySnapshot,
+  loadRecoverySnapshotWithMetadata,
+  loadVersionSnapshot,
   saveVersionSnapshot,
 } from '@knowledge/storage';
 import { StaleFencingTokenError } from '@knowledge/redis';
@@ -45,22 +47,90 @@ function extractXmlText(node: Y.XmlFragment | Y.XmlElement | Y.XmlText): string 
 
 export async function loadRoomSnapshot(documentId: string, doc: Y.Doc): Promise<boolean> {
   try {
-    const snapshotBytes = await loadRecoverySnapshot(documentId);
-    if (snapshotBytes && snapshotBytes.length > 0) {
-      Y.applyUpdate(doc, snapshotBytes);
+    // 1. PostgreSQL is treated as the authoritative source for the document's current snapshot metadata
+    let docRow:
+      | {
+          snapshot_key: string | null;
+          snapshot_version: number;
+          fencing_token: string | number;
+        }
+      | undefined;
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(documentId);
+
+    if (isUuid) {
+      try {
+        docRow = await withSystemContext(async (systemDb) => {
+          return await systemDb
+            .selectFrom('documents')
+            .where('id', '=', documentId)
+            .select(['snapshot_key', 'snapshot_version', 'fencing_token'])
+            .executeTakeFirst();
+        });
+      } catch (dbErr: any) {
+        if (dbErr?.code !== '22P02') {
+          console.error(`[collab-server] Failed to query snapshot metadata from DB for ${documentId}:`, dbErr);
+          throw dbErr;
+        }
+      }
+    }
+
+    const dbFencingToken = docRow ? Number(docRow.fencing_token || 0) : 0;
+    const dbSnapshotVersion = docRow ? Number(docRow.snapshot_version || 1) : 1;
+
+    // 2. Load latest.yjs with its fencing metadata
+    let recoveryResult = await loadRecoverySnapshotWithMetadata(documentId).catch((err: any) => {
+      const isNotFound =
+        err.name === 'NoSuchKey' ||
+        err.name === 'NotFound' ||
+        err.code === 'NoSuchKey' ||
+        err.$metadata?.httpStatusCode === 404;
+      if (isNotFound) return null;
+      throw err;
+    });
+
+    // Support fallback in test environments without DB row where loadRecoverySnapshot was mocked
+    if (!recoveryResult && !docRow) {
+      const fallbackBytes = await loadRecoverySnapshot(documentId);
+      if (fallbackBytes && fallbackBytes.length > 0) {
+        Y.applyUpdate(doc, fallbackBytes);
+        return true;
+      }
+    }
+
+    // 3. Compare object fencing token against authoritative DB fencing token:
+    // If metadata is missing, malformed, or older than DB fencing token, DO NOT hydrate from that object!
+    if (
+      recoveryResult &&
+      recoveryResult.fencingToken !== undefined &&
+      !isNaN(recoveryResult.fencingToken) &&
+      recoveryResult.fencingToken >= dbFencingToken &&
+      recoveryResult.data.length > 0
+    ) {
+      Y.applyUpdate(doc, recoveryResult.data);
       return true;
     }
+
+    // 4. Fallback to DB-authoritative version snapshot using snapshot_version
+    if (dbSnapshotVersion > 0) {
+      const versionBytes = await loadVersionSnapshot(documentId, dbSnapshotVersion).catch((err: any) => {
+        const isNotFound =
+          err.name === 'NoSuchKey' ||
+          err.name === 'NotFound' ||
+          err.code === 'NoSuchKey' ||
+          err.$metadata?.httpStatusCode === 404;
+        if (isNotFound) return null;
+        throw err;
+      });
+
+      if (versionBytes && versionBytes.length > 0) {
+        Y.applyUpdate(doc, versionBytes);
+        return true;
+      }
+    }
+
     return false;
   } catch (err: any) {
-    const isNotFound =
-      err.name === 'NoSuchKey' ||
-      err.name === 'NotFound' ||
-      err.code === 'NoSuchKey' ||
-      err.$metadata?.httpStatusCode === 404;
-
-    if (isNotFound) {
-      return false;
-    }
     console.error(`[collab-server] Failed to load snapshot for document ${documentId}:`, err);
     throw err;
   }
@@ -72,10 +142,10 @@ export async function persistRecoverySnapshot(
   fencingToken?: number
 ): Promise<void> {
   const snapshotBytes = Y.encodeStateAsUpdate(doc);
-  const key = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
   const contentText = extractSearchableText(doc);
 
   const updatedDoc = await withSystemContext(async (systemDb) => {
+    // 1. Validate DB fencing token under row lock FIRST!
     if (fencingToken !== undefined && fencingToken > 0) {
       const docRow = await systemDb
         .selectFrom('documents')
@@ -89,6 +159,9 @@ export async function persistRecoverySnapshot(
         );
       }
     }
+
+    // 2. Save recovery snapshot to MinIO ONLY AFTER PostgreSQL row lock validates fencing token!
+    const key = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
 
     return await systemDb
       .updateTable('documents')

@@ -17,6 +17,7 @@ export interface LockOptions {
   retryDelayMs?: number;
   maxRetries?: number;
   minFencingToken?: number;
+  skipLocalMutex?: boolean;
 }
 
 export interface LockContext {
@@ -293,8 +294,10 @@ export async function withDistributedLock<T>(
   const renewalIntervalMs =
     options.renewalIntervalMs ?? Math.min(DEFAULT_RENEWAL_INTERVAL_MS, Math.max(10, Math.floor(ttlMs / 3)));
 
-  // In-process serialization: queues concurrent requests within this process
-  const releaseLocal = await localMutex.acquire(resourceKey);
+  // In-process serialization: queues concurrent requests within this process unless skipLocalMutex is requested (for cross-instance testing)
+  const releaseLocal = options.skipLocalMutex
+    ? () => {}
+    : await localMutex.acquire(resourceKey);
 
   let redisLock: DistributedLockHandle | null = null;
   let isLockActive = false;

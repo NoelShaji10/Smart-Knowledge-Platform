@@ -7,6 +7,10 @@ import {
   renewRedisLock,
   releaseRedisLock,
   LockLostError,
+  StaleFencingTokenError,
+  getFencingToken,
+  validateFencingToken,
+  assertFencingTokenValid,
 } from './lock';
 import { getRedisClient } from './client';
 
@@ -215,7 +219,7 @@ describe('Production Redis Distributed Lease & Lock Semantics', () => {
 
   it('6. fails closed when Redis is unavailable before acquisition (no silent local downgrade)', async () => {
     const key = `fail-closed-test-${Date.now()}`;
-    const setSpy = vi.spyOn(redis, 'set').mockRejectedValue(new Error('ECONNREFUSED'));
+    const evalSpy = vi.spyOn(redis, 'eval').mockRejectedValue(new Error('ECONNREFUSED'));
 
     let callbackExecuted = false;
 
@@ -229,7 +233,7 @@ describe('Production Redis Distributed Lease & Lock Semantics', () => {
 
       expect(callbackExecuted).toBe(false);
     } finally {
-      setSpy.mockRestore();
+      evalSpy.mockRestore();
     }
   });
 
@@ -390,6 +394,117 @@ describe('Production Redis Distributed Lease & Lock Semantics', () => {
     } finally {
       evalSpy.mockRestore();
     }
+  });
+
+  it('12. monotonically allocates strictly increasing fencing tokens across acquisitions', async () => {
+    const key = `monotonic-fence-${Date.now()}`;
+    const handle1 = await acquireRedisLock(key, { ttlMs: 1000 });
+    expect(handle1.fencingToken).toBeGreaterThanOrEqual(1);
+
+    await releaseRedisLock(handle1);
+
+    const handle2 = await acquireRedisLock(key, { ttlMs: 1000 });
+    expect(handle2.fencingToken).toBe(handle1.fencingToken + 1);
+
+    await releaseRedisLock(handle2);
+
+    const handle3 = await acquireRedisLock(key, { ttlMs: 1000 });
+    expect(handle3.fencingToken).toBe(handle2.fencingToken + 1);
+
+    await releaseRedisLock(handle3);
+    await redis.del(`fence:${key}`);
+  });
+
+  it('13. detects fencing token supersession on lease renewal and rejects with StaleFencingTokenError', async () => {
+    const key = `fence-supersede-${Date.now()}`;
+
+    // Instance A acquires token N
+    const handleA = await acquireRedisLock(key, { ttlMs: 2000 });
+    expect(handleA.fencingToken).toBeGreaterThanOrEqual(1);
+
+    try {
+      // Simulate Instance B acquiring on another node after expiration/force-takeover
+      // Force fence token to increment to N+1
+      await redis.incr(`fence:${key}`);
+
+      // Instance A attempts lease renewal with its stale token
+      const renewed = await renewRedisLock(handleA, 2000);
+      expect(renewed).toBe(false);
+
+      // validateFencingToken rejects Instance A's token
+      const isValid = await validateFencingToken(key, handleA.fencingToken);
+      expect(isValid).toBe(false);
+
+      await expect(assertFencingTokenValid(key, handleA.fencingToken)).rejects.toThrow(
+        StaleFencingTokenError
+      );
+    } finally {
+      await releaseRedisLock(handleA);
+      await redis.del(`fence:${key}`);
+    }
+  });
+
+  it('14. withDistributedLock context provides accurate fencingToken and verifyOwnership checks', async () => {
+    const key = `ctx-fence-${Date.now()}`;
+    let tokenObserved = 0;
+
+    await withDistributedLock(key, async (ctx) => {
+      tokenObserved = ctx.fencingToken;
+      expect(ctx.fencingToken).toBeGreaterThanOrEqual(1);
+      expect(ctx.isLockValid()).toBe(true);
+      await ctx.verifyOwnership();
+    });
+
+    expect(tokenObserved).toBeGreaterThanOrEqual(1);
+    await redis.del(`fence:${key}`);
+  });
+
+  it('15. cross-instance scenario: Instance A rejected when Instance B acquires higher token', async () => {
+    const key = `cross-instance-supersede-${Date.now()}`;
+    let instanceAAttemptedStaleWrite = false;
+    let instanceAThrewStaleError = false;
+
+    // Instance A runs under withDistributedLock
+    const instanceAPromise = withDistributedLock(
+      key,
+      async (ctxA) => {
+        const tokenA = ctxA.fencingToken;
+        expect(tokenA).toBeGreaterThanOrEqual(1);
+
+        // Instance A starts in-flight async work
+        await new Promise((r) => setTimeout(r, 60));
+
+        // Lease lost in Redis: lock key expires / deleted
+        await redis.del(`lock:${key}`);
+
+        // Instance B acquires lock on another instance with token N+1
+        const handleB = await acquireRedisLock(key, { ttlMs: 2000 });
+        expect(handleB.fencingToken).toBe(tokenA + 1);
+
+        // Instance A's delayed work wakes up and tries verifyOwnership
+        instanceAAttemptedStaleWrite = true;
+        try {
+          await ctxA.verifyOwnership();
+        } catch (err) {
+          if (err instanceof StaleFencingTokenError) {
+            instanceAThrewStaleError = true;
+          }
+          throw err;
+        } finally {
+          await releaseRedisLock(handleB);
+        }
+      },
+      { ttlMs: 500, renewalIntervalMs: 50 }
+    ).catch((err) => {
+      return 'instanceA-rejected';
+    });
+
+    const result = await instanceAPromise;
+    expect(result).toBe('instanceA-rejected');
+    expect(instanceAAttemptedStaleWrite).toBe(true);
+    expect(instanceAThrewStaleError).toBe(true);
+
+    await redis.del(`fence:${key}`);
   });
 });
 

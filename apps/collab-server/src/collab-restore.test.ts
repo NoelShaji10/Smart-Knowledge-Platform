@@ -124,8 +124,8 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                   return null;
                 },
               }),
-              select: (_sel: any) => ({
-                executeTakeFirst: async () => {
+              select: (_sel: any) => {
+                const selectResult = async () => {
                   if (table === 'workspace_members') {
                     return memberRole ? { role: memberRole } : null;
                   }
@@ -133,26 +133,48 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                     return overrideRole ? { role: overrideRole } : null;
                   }
                   return null;
-                },
-              }),
+                };
+                const selBuilder: any = {
+                  forUpdate: () => selBuilder,
+                  executeTakeFirst: selectResult,
+                  executeTakeFirstOrThrow: async () => {
+                    const r = await selectResult();
+                    if (!r) throw new Error('Not found');
+                    return r;
+                  },
+                };
+                return selBuilder;
+              },
             }),
             selectAll: () => ({
               executeTakeFirst: async () => null,
             }),
-            select: (_sel: any) => ({
-              executeTakeFirst: async () => {
+            select: (_sel: any) => {
+              const selectResult = async () => {
                 if (table === 'users') {
                   return userExists ? { id: val } : null;
                 }
                 if (table === 'documents') {
-                  return docExists ? { workspace_id: workspaceId, is_archived: docArchived ? 1 : 0 } : null;
+                  return docExists
+                    ? { workspace_id: workspaceId, fencing_token: 0, is_archived: docArchived ? 1 : 0 }
+                    : null;
                 }
                 if (table === 'document_versions') {
                   return { max_ver: 2 };
                 }
                 return null;
-              },
-            }),
+              };
+              const selBuilder: any = {
+                forUpdate: () => selBuilder,
+                executeTakeFirst: selectResult,
+                executeTakeFirstOrThrow: async () => {
+                  const r = await selectResult();
+                  if (!r) throw new Error('Not found');
+                  return r;
+                },
+              };
+              return selBuilder;
+            },
           }),
         }),
         insertInto: () => ({
@@ -168,29 +190,30 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
           }),
         }),
         updateTable: () => ({
-          set: (sets: any) => ({
-            where: () => {
-              const res = {
-                id: docId,
-                workspace_id: workspaceId,
-                snapshot_version: 3,
-                ...sets,
-              };
-              return {
-                returningAll: () => ({
-                  executeTakeFirstOrThrow: async () => res,
-                  executeTakeFirst: async () => res,
-                }),
-                returning: () => ({
-                  executeTakeFirstOrThrow: async () => res,
-                  executeTakeFirst: async () => res,
-                }),
+          set: (sets: any) => {
+            const res = {
+              id: docId,
+              workspace_id: workspaceId,
+              snapshot_version: 3,
+              fencing_token: 0,
+              ...sets,
+            };
+            const updateBuilder: any = {
+              where: () => updateBuilder,
+              returningAll: () => ({
                 executeTakeFirstOrThrow: async () => res,
                 executeTakeFirst: async () => res,
-                execute: async () => {},
-              };
-            },
-          }),
+              }),
+              returning: () => ({
+                executeTakeFirstOrThrow: async () => res,
+                executeTakeFirst: async () => res,
+              }),
+              executeTakeFirstOrThrow: async () => res,
+              executeTakeFirst: async () => res,
+              execute: async () => {},
+            };
+            return updateBuilder;
+          },
         }),
       };
       return await fn(mockSystemDb);
@@ -622,24 +645,39 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                     return null;
                   },
                 }),
-                select: (_sel: any) => ({
-                  executeTakeFirst: async () => ({ role: 'editor' }),
-                }),
+                select: (_sel: any) => {
+                  const selBuilder: any = {
+                    forUpdate: () => selBuilder,
+                    executeTakeFirst: async () => ({ role: 'editor' }),
+                    executeTakeFirstOrThrow: async () => ({ role: 'editor' }),
+                  };
+                  return selBuilder;
+                },
               }),
               selectAll: () => ({
                 executeTakeFirst: async () => null,
               }),
-              select: (_sel: any) => ({
-                executeTakeFirst: async () => {
+              select: (_sel: any) => {
+                const selectResult = async () => {
                   if (table === 'users') return { id: val };
-                  if (table === 'documents') return { workspace_id: workspaceId, is_archived: 0 };
+                  if (table === 'documents') return { workspace_id: workspaceId, fencing_token: 0, is_archived: 0 };
                   if (table === 'document_versions') {
                     currentMax += 1;
                     return { max_ver: currentMax - 1 };
                   }
                   return null;
-                },
-              }),
+                };
+                const selBuilder: any = {
+                  forUpdate: () => selBuilder,
+                  executeTakeFirst: selectResult,
+                  executeTakeFirstOrThrow: async () => {
+                    const r = await selectResult();
+                    if (!r) throw new Error('Not found');
+                    return r;
+                  },
+                };
+                return selBuilder;
+              },
             }),
           }),
           insertInto: () => ({
@@ -655,22 +693,24 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
             }),
           }),
           updateTable: () => ({
-            set: (sets: any) => ({
-              where: () => {
-                const res = {
-                  id: docId,
-                  workspace_id: workspaceId,
-                  snapshot_version: currentMax,
-                  ...sets,
-                };
-                return {
-                  returningAll: () => ({
-                    executeTakeFirstOrThrow: async () => res,
-                  }),
-                  execute: async () => {},
-                };
-              },
-            }),
+            set: (sets: any) => {
+              const res = {
+                id: docId,
+                workspace_id: workspaceId,
+                snapshot_version: currentMax,
+                fencing_token: 0,
+                ...sets,
+              };
+              const updateBuilder: any = {
+                where: () => updateBuilder,
+                returningAll: () => ({
+                  executeTakeFirstOrThrow: async () => res,
+                  executeTakeFirst: async () => res,
+                }),
+                execute: async () => {},
+              };
+              return updateBuilder;
+            },
           }),
         };
         return await fn(mockSystemDb);

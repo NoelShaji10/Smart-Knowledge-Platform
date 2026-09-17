@@ -99,8 +99,13 @@ describe('T2: Snapshot Service & Persistence', () => {
       // Simulate connection close -> removeRoomIfEmpty
       await removeRoomIfEmpty(docId, '00000000-0000-0000-0000-000000000201');
 
-      expect(persistSpy).toHaveBeenCalledWith(docId, expect.any(Y.Doc));
-      expect(checkpointSpy).toHaveBeenCalledWith(docId, expect.any(Y.Doc), '00000000-0000-0000-0000-000000000201');
+      expect(persistSpy).toHaveBeenCalledWith(docId, expect.any(Y.Doc), expect.anything());
+      expect(checkpointSpy).toHaveBeenCalledWith(
+        docId,
+        expect.any(Y.Doc),
+        '00000000-0000-0000-0000-000000000201',
+        expect.anything()
+      );
       expect(getRoom(docId)).toBeUndefined();
     });
   });

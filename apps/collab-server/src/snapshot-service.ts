@@ -6,6 +6,7 @@ import {
   loadRecoverySnapshot,
   saveVersionSnapshot,
 } from '@knowledge/storage';
+import { StaleFencingTokenError } from '@knowledge/redis';
 import { getPgBoss, QUEUE_INDEX_DOCUMENT } from '@knowledge/jobs';
 
 export function extractSearchableText(doc: Y.Doc): string {
@@ -65,20 +66,45 @@ export async function loadRoomSnapshot(documentId: string, doc: Y.Doc): Promise<
   }
 }
 
-export async function persistRecoverySnapshot(documentId: string, doc: Y.Doc): Promise<void> {
+export async function persistRecoverySnapshot(
+  documentId: string,
+  doc: Y.Doc,
+  fencingToken?: number
+): Promise<void> {
   const snapshotBytes = Y.encodeStateAsUpdate(doc);
-  const key = await saveRecoverySnapshot(documentId, snapshotBytes);
+  const key = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
   const contentText = extractSearchableText(doc);
 
   const updatedDoc = await withSystemContext(async (systemDb) => {
+    if (fencingToken !== undefined && fencingToken > 0) {
+      const docRow = await systemDb
+        .selectFrom('documents')
+        .where('id', '=', documentId)
+        .select(['fencing_token'])
+        .forUpdate()
+        .executeTakeFirst();
+      if (docRow && Number(docRow.fencing_token || 0) > fencingToken) {
+        throw new StaleFencingTokenError(
+          `Stale recovery snapshot persistence for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+        );
+      }
+    }
+
     return await systemDb
       .updateTable('documents')
       .set({
         snapshot_key: key,
         content_text: contentText,
+        ...(fencingToken !== undefined && fencingToken > 0 ? { fencing_token: fencingToken } : {}),
         updated_at: new Date(),
       })
       .where('id', '=', documentId)
+      .where((eb) => {
+        if (fencingToken !== undefined && fencingToken > 0) {
+          return eb('fencing_token', '<=', fencingToken);
+        }
+        return eb.val(true);
+      })
       .returning(['workspace_id', 'snapshot_version'])
       .executeTakeFirst();
   });
@@ -100,7 +126,8 @@ export async function persistRecoverySnapshot(documentId: string, doc: Y.Doc): P
 export async function createVersionCheckpointOnSessionEnd(
   documentId: string,
   doc: Y.Doc,
-  actorUserId?: string
+  actorUserId?: string,
+  fencingToken?: number
 ): Promise<void> {
   const snapshotBytes = Y.encodeStateAsUpdate(doc);
   const contentText = extractSearchableText(doc);
@@ -109,11 +136,21 @@ export async function createVersionCheckpointOnSessionEnd(
     const docRow = await systemDb
       .selectFrom('documents')
       .where('id', '=', documentId)
-      .select(['workspace_id', 'title', 'created_by'])
+      .select(['workspace_id', 'title', 'created_by', 'fencing_token'])
       .forUpdate()
       .executeTakeFirst();
 
     if (!docRow) return null;
+
+    if (
+      fencingToken !== undefined &&
+      fencingToken > 0 &&
+      Number(docRow.fencing_token || 0) > fencingToken
+    ) {
+      throw new StaleFencingTokenError(
+        `Stale version checkpoint for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+      );
+    }
 
     const maxRes = await systemDb
       .selectFrom('document_versions')
@@ -140,6 +177,20 @@ export async function createVersionCheckpointOnSessionEnd(
   );
 
   await withSystemContext(async (systemDb) => {
+    if (fencingToken !== undefined && fencingToken > 0) {
+      const docRow = await systemDb
+        .selectFrom('documents')
+        .where('id', '=', documentId)
+        .select(['fencing_token'])
+        .forUpdate()
+        .executeTakeFirst();
+      if (docRow && Number(docRow.fencing_token || 0) > fencingToken) {
+        throw new StaleFencingTokenError(
+          `Stale checkpoint commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+        );
+      }
+    }
+
     await systemDb
       .insertInto('document_versions')
       .values({
@@ -150,6 +201,7 @@ export async function createVersionCheckpointOnSessionEnd(
         content_text: contentText,
         created_by: checkpointData.createdBy,
         trigger: 'session_end',
+        ...(fencingToken !== undefined && fencingToken > 0 ? { fencing_token: fencingToken } : {}),
       })
       .execute();
 
@@ -159,9 +211,16 @@ export async function createVersionCheckpointOnSessionEnd(
         snapshot_version: checkpointData.nextVersion,
         snapshot_key: versionKey,
         content_text: contentText,
+        ...(fencingToken !== undefined && fencingToken > 0 ? { fencing_token: fencingToken } : {}),
         updated_at: new Date(),
       })
       .where('id', '=', documentId)
+      .where((eb) => {
+        if (fencingToken !== undefined && fencingToken > 0) {
+          return eb('fencing_token', '<=', fencingToken);
+        }
+        return eb.val(true);
+      })
       .execute();
 
     await systemDb

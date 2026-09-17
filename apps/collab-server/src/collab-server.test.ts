@@ -58,6 +58,7 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     clearAllRooms();
     vi.restoreAllMocks();
   });
@@ -398,6 +399,7 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
       expect(snapshotService.persistRecoverySnapshot).toHaveBeenCalledWith(
         '00000000-0000-0000-0000-000000000120',
         room.doc,
+        expect.anything(),
       );
       vi.useRealTimers();
     });

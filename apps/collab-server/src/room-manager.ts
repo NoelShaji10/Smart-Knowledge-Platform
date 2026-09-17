@@ -7,7 +7,7 @@ import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { sql } from 'kysely';
 import { withSystemContext } from '@knowledge/database';
-import { withDistributedLock, LockContext, LockOptions } from '@knowledge/redis';
+import { withDistributedLock, LockContext, LockOptions, StaleFencingTokenError } from '@knowledge/redis';
 import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot } from '@knowledge/storage';
 import {
   loadRoomSnapshot,
@@ -45,6 +45,7 @@ export interface Room {
   lastPersistedSeq: number;
   inFlightPersistence: Promise<void> | null;
   queuedPersistenceSeq: number | null;
+  fencingToken?: number;
 }
 
 export function broadcastPersistence(
@@ -125,7 +126,7 @@ export function queueRoomPersistence(room: Room): Promise<void> {
 
   const promise = (async () => {
     try {
-      await persistRecoverySnapshot(room.documentId, room.doc);
+      await persistRecoverySnapshot(room.documentId, room.doc, room.fencingToken);
       room.lastPersistedSeq = Math.max(room.lastPersistedSeq, seqToPersist);
       broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
     } catch (err) {
@@ -187,6 +188,7 @@ export async function getOrCreateRoom(documentId: string): Promise<Room> {
       lastPersistedSeq: -1,
       inFlightPersistence: null,
       queuedPersistenceSeq: null,
+      fencingToken: lockContext?.fencingToken,
     };
 
     const onDocUpdate = (update: Uint8Array, origin: unknown) => {
@@ -267,10 +269,15 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
 
     try {
       // 1. Persist final recovery snapshot
-      await persistRecoverySnapshot(documentId, room.doc);
+      await persistRecoverySnapshot(documentId, room.doc, lockContext?.fencingToken);
       lockContext?.assertLockValid();
       // 2. Persist session-end version checkpoint
-      await createVersionCheckpointOnSessionEnd(documentId, room.doc, lastUserId || room.lastActiveUserId);
+      await createVersionCheckpointOnSessionEnd(
+        documentId,
+        room.doc,
+        lastUserId || room.lastActiveUserId,
+        lockContext?.fencingToken
+      );
     } catch (err) {
       console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
     }
@@ -400,6 +407,7 @@ export async function restoreDocument(
 ): Promise<{ document: any; newVersion: any }> {
   return await withDocumentLock(documentId, async (lockContext) => {
     lockContext?.assertLockValid();
+    const fencingToken = lockContext?.fencingToken ?? 0;
 
     // 1. Fetch historical version row from database
     const versionRow = await withSystemContext(async (systemDb) => {
@@ -449,6 +457,14 @@ export async function restoreDocument(
       // CASE 1: ACTIVE ROOM RESTORE
       lockContext?.assertLockValid();
 
+      // Check fencing token against in-memory room
+      if (fencingToken > 0 && room.fencingToken !== undefined && room.fencingToken > fencingToken) {
+        throw new StaleFencingTokenError(
+          `Stale active room restore for ${documentId}: token ${fencingToken} < room token ${room.fencingToken}`
+        );
+      }
+      room.fencingToken = fencingToken;
+
       // Apply historical state to room.doc inside a transaction
       // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
       room.doc.transact(() => {
@@ -471,6 +487,20 @@ export async function restoreDocument(
 
       return await withSystemContext(async (systemDb) => {
         lockContext?.assertLockValid();
+
+        // 1. Validate DB fencing token under row lock
+        const docRow = await systemDb
+          .selectFrom('documents')
+          .where('id', '=', documentId)
+          .select(['workspace_id', 'fencing_token'])
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+
+        if (fencingToken > 0 && Number(docRow.fencing_token || 0) > fencingToken) {
+          throw new StaleFencingTokenError(
+            `Stale active room restore commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+          );
+        }
 
         const maxRes = await systemDb
           .selectFrom('document_versions')
@@ -495,6 +525,7 @@ export async function restoreDocument(
             content_text: finalContentText,
             created_by: userId,
             trigger: 'restore',
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
           })
           .returningAll()
           .executeTakeFirstOrThrow();
@@ -506,9 +537,16 @@ export async function restoreDocument(
             content_text: finalContentText,
             snapshot_key: versionKey,
             snapshot_version: nextVersion,
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
             updated_at: new Date(),
           })
           .where('id', '=', documentId)
+          .where((eb) => {
+            if (fencingToken > 0) {
+              return eb('fencing_token', '<=', fencingToken);
+            }
+            return eb.val(true);
+          })
           .returningAll()
           .executeTakeFirstOrThrow();
 
@@ -540,9 +578,8 @@ export async function restoreDocument(
       // CASE 2: ROOM-LESS RESTORE (under the exact same document lock)
       lockContext?.assertLockValid();
 
-      // 1. Persist restored state to MinIO recovery snapshot (latest.yjs)
-      // Any waiting or future getOrCreateRoom() will hydrate directly from this restored state!
-      const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes);
+      // 1. Persist restored state to MinIO recovery snapshot (latest.yjs) with fencing token validation
+      const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
       lockContext?.assertLockValid();
 
       // Verify lock ownership before committing checkpoint to DB
@@ -551,6 +588,20 @@ export async function restoreDocument(
 
       return await withSystemContext(async (systemDb) => {
         lockContext?.assertLockValid();
+
+        // 1. Validate DB fencing token under row lock
+        const docRow = await systemDb
+          .selectFrom('documents')
+          .where('id', '=', documentId)
+          .select(['workspace_id', 'fencing_token'])
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+
+        if (fencingToken > 0 && Number(docRow.fencing_token || 0) > fencingToken) {
+          throw new StaleFencingTokenError(
+            `Stale room-less restore commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+          );
+        }
 
         const maxRes = await systemDb
           .selectFrom('document_versions')
@@ -572,9 +623,16 @@ export async function restoreDocument(
             content_text: contentText,
             snapshot_key: recoveryKey || versionKey,
             snapshot_version: nextVersion,
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
             updated_at: new Date(),
           })
           .where('id', '=', documentId)
+          .where((eb) => {
+            if (fencingToken > 0) {
+              return eb('fencing_token', '<=', fencingToken);
+            }
+            return eb.val(true);
+          })
           .returningAll()
           .executeTakeFirstOrThrow();
 
@@ -588,6 +646,7 @@ export async function restoreDocument(
             content_text: contentText,
             created_by: userId,
             trigger: 'restore',
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
           })
           .returningAll()
           .executeTakeFirstOrThrow();

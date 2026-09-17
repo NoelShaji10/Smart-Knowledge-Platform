@@ -48,6 +48,7 @@ export interface DocumentsTable {
   content_tsv: Generated<unknown>;
   snapshot_key: string | null;
   snapshot_version: Generated<number>;
+  fencing_token: Generated<number>;
   created_by: string;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -70,6 +71,7 @@ export interface DocumentVersionsTable {
   title: string | null;
   created_by: string | null;
   trigger: 'manual' | 'auto_interval' | 'session_end' | 'restore';
+  fencing_token: Generated<number>;
   created_at: Generated<Date>;
 }
 

@@ -338,6 +338,9 @@ importers:
       '@knowledge/config':
         specifier: workspace:*
         version: link:../config
+      '@knowledge/types':
+        specifier: workspace:*
+        version: link:../types
       ioredis:
         specifier: ^5.3.2
         version: 5.11.1
@@ -350,6 +353,9 @@ importers:
       '@knowledge/config':
         specifier: workspace:*
         version: link:../config
+      '@knowledge/types':
+        specifier: workspace:*
+        version: link:../types
 
   packages/types: {}
 

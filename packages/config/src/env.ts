@@ -33,6 +33,7 @@ export const envSchema = z.object({
   RATE_LIMIT_WS_TICKET: z.coerce.number().default(30),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(60),
   SNAPSHOT_DEBOUNCE_MS: z.coerce.number().default(2000),
+  INTERNAL_SERVICE_KEY: z.string().min(8).default('internal-service-secret-key-min-8-chars'),
 });
 
 export type Env = z.infer<typeof envSchema>;

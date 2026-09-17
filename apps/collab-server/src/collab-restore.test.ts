@@ -23,6 +23,9 @@ import {
 import * as storage from '@knowledge/storage';
 import * as snapshotService from './snapshot-service';
 import * as database from '@knowledge/database';
+import request from 'supertest';
+import { createCollabServer, verifyUserCanEditDocument } from './server';
+import { getEnv } from '@knowledge/config';
 
 class MockWebSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
@@ -54,10 +57,22 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
   const storageSnapshots = new Map<string, Uint8Array>();
   const storageVersions = new Map<string, Uint8Array>();
 
+  let userExists = true;
+  let docExists = true;
+  let docArchived = false;
+  let memberRole: 'owner' | 'admin' | 'editor' | 'viewer' | null = 'editor';
+  let overrideRole: 'editor' | 'viewer' | 'none' | null = null;
+
   beforeEach(() => {
     clearAllRooms();
     storageSnapshots.clear();
     storageVersions.clear();
+
+    userExists = true;
+    docExists = true;
+    docArchived = false;
+    memberRole = 'editor';
+    overrideRole = null;
 
     vi.spyOn(storage, 'loadRecoverySnapshot').mockImplementation(async (dId) => {
       return storageSnapshots.get(dId) || null;
@@ -108,9 +123,34 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                   return null;
                 },
               }),
+              select: (_sel: any) => ({
+                executeTakeFirst: async () => {
+                  if (table === 'workspace_members') {
+                    return memberRole ? { role: memberRole } : null;
+                  }
+                  if (table === 'document_permissions') {
+                    return overrideRole ? { role: overrideRole } : null;
+                  }
+                  return null;
+                },
+              }),
+            }),
+            selectAll: () => ({
+              executeTakeFirst: async () => null,
             }),
             select: (_sel: any) => ({
-              executeTakeFirst: async () => ({ max_ver: 2 }),
+              executeTakeFirst: async () => {
+                if (table === 'users') {
+                  return userExists ? { id: val } : null;
+                }
+                if (table === 'documents') {
+                  return docExists ? { workspace_id: workspaceId, is_archived: docArchived ? 1 : 0 } : null;
+                }
+                if (table === 'document_versions') {
+                  return { max_ver: 2 };
+                }
+                return null;
+              },
             }),
           }),
         }),
@@ -410,5 +450,88 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
     clearAllRooms();
     const result = await restoreActiveRoom('non-existent-doc-id', 1, userId);
     expect(result).toBeNull();
+  });
+
+  describe('Internal Restore Endpoint & Security', () => {
+    const { server } = createCollabServer();
+
+    it('rejects internal restore without service key (401)', async () => {
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unauthorized internal service request');
+    });
+
+    it('rejects internal restore with invalid service key (401)', async () => {
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', 'wrong-key')
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unauthorized internal service request');
+    });
+
+    it('rejects internal restore when user does not have edit permissions (403)', async () => {
+      memberRole = 'viewer';
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects internal restore when document is archived (403)', async () => {
+      docArchived = true;
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects internal restore when user does not exist (401)', async () => {
+      userExists = false;
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('returns hasActiveRoom: false when no active room is open in memory', async () => {
+      clearAllRooms();
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(200);
+      expect(res.body.hasActiveRoom).toBe(false);
+    });
+
+    it('restores active room when room is open in memory', async () => {
+      const room = await getOrCreateRoom(docId);
+      const frag = room.doc.getXmlFragment('default');
+      const p1 = new Y.XmlElement('p');
+      p1.insert(0, [new Y.XmlText('Initial State')]);
+      frag.insert(0, [p1]);
+
+      storageVersions.set(`${docId}:1`, Y.encodeStateAsUpdate(room.doc));
+
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId });
+
+      expect(res.status).toBe(200);
+      expect(res.body.hasActiveRoom).toBe(true);
+      expect(res.body.newVersion.version_number).toBe(3);
+    });
   });
 });

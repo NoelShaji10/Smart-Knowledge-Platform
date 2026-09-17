@@ -7,6 +7,7 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 
+import { getEnv } from '@knowledge/config';
 import { withSystemContext } from '@knowledge/database';
 import { verifyAndConsumeTicket, TicketData } from './ticket-verifier';
 import { checkCollabServerHealth } from './health';
@@ -134,6 +135,75 @@ export interface CollabAuthContext extends TicketData {
   effectiveRole: WorkspaceRole | DocumentRole;
 }
 
+export async function verifyUserCanEditDocument(
+  userId: string,
+  documentId: string
+): Promise<{ ok: boolean; status: number; reason?: string }> {
+  try {
+    return await withSystemContext(async (systemDb) => {
+      const user = await systemDb
+        .selectFrom('users')
+        .where('id', '=', userId)
+        .select(['id'])
+        .executeTakeFirst();
+
+      if (!user) return { ok: false, status: 401, reason: 'User not found' };
+
+      const doc = await systemDb
+        .selectFrom('documents')
+        .where('id', '=', documentId)
+        .select(['workspace_id', 'is_archived'])
+        .executeTakeFirst();
+
+      if (!doc) return { ok: false, status: 404, reason: 'Document not found' };
+
+      if (doc.is_archived) {
+        return { ok: false, status: 403, reason: 'Cannot restore an archived document' };
+      }
+
+      const member = await systemDb
+        .selectFrom('workspace_members')
+        .where('workspace_id', '=', doc.workspace_id)
+        .where('user_id', '=', userId)
+        .select(['role'])
+        .executeTakeFirst();
+
+      if (!member) return { ok: false, status: 403, reason: 'User is not a member of the workspace' };
+
+      const wsRole = member.role as WorkspaceRole;
+
+      const docPerm = await systemDb
+        .selectFrom('document_permissions')
+        .where('document_id', '=', documentId)
+        .where('user_id', '=', userId)
+        .select(['role'])
+        .executeTakeFirst();
+
+      const overrideRole = docPerm ? (docPerm.role as DocumentRole) : null;
+      if (overrideRole === 'none') {
+        return { ok: false, status: 403, reason: 'User has no access to document' };
+      }
+
+      let canEdit = false;
+      if (wsRole === 'owner' || wsRole === 'admin') {
+        canEdit = true;
+      } else if (wsRole === 'editor') {
+        canEdit = overrideRole !== 'viewer';
+      } else if (wsRole === 'viewer') {
+        canEdit = overrideRole === 'editor';
+      }
+
+      if (!canEdit) {
+        return { ok: false, status: 403, reason: 'User does not have edit permissions on this document' };
+      }
+
+      return { ok: true, status: 200 };
+    });
+  } catch (err: any) {
+    return { ok: false, status: 500, reason: err?.message || 'Internal error checking permissions' };
+  }
+}
+
 export function createCollabServer() {
   const server = http.createServer(async (req, res) => {
     if (req.url === '/health') {
@@ -146,6 +216,16 @@ export function createCollabServer() {
     const restoreMatch = req.method === 'POST' && req.url?.match(/^\/internal\/documents\/([^/]+)\/restore$/);
     if (restoreMatch) {
       const documentId = restoreMatch[1];
+
+      // 1. Authenticate service-to-service key
+      const expectedKey = getEnv().INTERNAL_SERVICE_KEY;
+      const providedKey = req.headers['x-internal-key'];
+      if (!providedKey || providedKey !== expectedKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized internal service request' }));
+        return;
+      }
+
       let bodyStr = '';
       req.on('data', (chunk) => {
         bodyStr += chunk;
@@ -162,6 +242,15 @@ export function createCollabServer() {
             return;
           }
 
+          // 2. Authorize user permissions independently
+          const permResult = await verifyUserCanEditDocument(userId, documentId);
+          if (!permResult.ok) {
+            res.writeHead(permResult.status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: permResult.reason || 'Forbidden' }));
+            return;
+          }
+
+          // 3. Check active room
           const room = getRoom(documentId);
           if (!room) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -169,6 +258,7 @@ export function createCollabServer() {
             return;
           }
 
+          // 4. Restore active room
           const result = await restoreActiveRoom(documentId, versionNumber, userId);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ hasActiveRoom: true, ...result }));

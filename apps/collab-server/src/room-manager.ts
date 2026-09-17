@@ -1,5 +1,6 @@
 import type { WebSocket } from 'ws';
 import * as Y from 'yjs';
+export { Y };
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import type { WorkspaceRole, DocumentRole } from '@knowledge/types';

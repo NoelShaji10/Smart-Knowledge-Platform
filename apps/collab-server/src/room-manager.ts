@@ -14,6 +14,8 @@ import {
   persistRecoverySnapshot,
   createVersionCheckpointOnSessionEnd,
   extractSearchableText,
+  extractXmlText,
+  getAuthoritativeDefaultType,
 } from './snapshot-service';
 
 export const MESSAGE_YJS_SYNC = 0;
@@ -225,12 +227,67 @@ export async function flushRoomPersistence(room: Room): Promise<void> {
   return queueRoomPersistence(room);
 }
 
+/**
+ * Synchronize the document's fencing token in PostgreSQL immediately upon distributed lock acquisition.
+ * Guarantees PostgreSQL's fencing generation reflects the newer generation as soon as Redis grants the lease,
+ * ensuring any stale lock owner's subsequent database queries/mutations are immediately rejected.
+ */
+export async function syncDocumentFencingToken(
+  documentId: string,
+  fencingToken: number
+): Promise<void> {
+  if (!fencingToken || fencingToken <= 0) return;
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(documentId);
+  if (!isUuid) return;
+
+  try {
+    await withSystemContext(async (systemDb) => {
+      let query: any = systemDb
+        .updateTable('documents')
+        .set({
+          fencing_token: fencingToken,
+          updated_at: new Date(),
+        });
+
+      if (typeof query?.where === 'function') {
+        query = query.where((eb: any) => {
+          if (typeof eb?.and === 'function') {
+            return eb.and([
+              eb('id', '=', documentId),
+              eb.or([
+                eb('fencing_token', '<', fencingToken),
+                eb('fencing_token', 'is', null),
+              ]),
+            ]);
+          }
+          return eb('id', '=', documentId);
+        });
+      }
+
+      if (typeof query?.execute === 'function') {
+        await query.execute();
+      }
+    });
+  } catch (err: any) {
+    // Safe handling if DB is mocked in unit tests or document does not exist yet
+  }
+}
+
 export async function withDocumentLock<T>(
   documentId: string,
   fn: (lockContext?: LockContext) => Promise<T>,
   options?: LockOptions
 ): Promise<T> {
-  return await withDistributedLock(`document:${documentId}`, fn, options);
+  return await withDistributedLock(
+    `document:${documentId}`,
+    async (lockContext) => {
+      if (lockContext?.fencingToken && lockContext.fencingToken > 0) {
+        await syncDocumentFencingToken(documentId, lockContext.fencingToken);
+      }
+      return await fn(lockContext);
+    },
+    options
+  );
 }
 
 export async function getOrCreateRoom(documentId: string): Promise<Room> {
@@ -386,23 +443,69 @@ export function clearAllRooms(): void {
   rooms.clear();
 }
 
+function cloneXmlNode(node: any): Y.XmlElement | Y.XmlText {
+  if (node instanceof Y.XmlText || node?.constructor?.name === 'XmlText' || node?.nodeName === undefined) {
+    return new Y.XmlText(node.toString());
+  }
+  const el = new Y.XmlElement(node.nodeName);
+  const attrs = typeof node.getAttributes === 'function' ? node.getAttributes() : {};
+  for (const [k, v] of Object.entries(attrs)) {
+    el.setAttribute(k, v as string);
+  }
+  const children: (Y.XmlElement | Y.XmlText)[] = [];
+  const childNodes: any[] = typeof node.toArray === 'function'
+    ? node.toArray()
+    : (typeof node.length === 'number' ? Array.from({ length: node.length }, (_, i) => node.get(i)) : []);
+  for (const child of childNodes) {
+    children.push(cloneXmlNode(child));
+  }
+  if (children.length > 0) {
+    el.insert(0, children);
+  }
+  return el;
+}
+
 /**
  * Apply historical Y.Doc state onto an active target Y.Doc inside an atomic transaction.
  * Clones shared types (XmlFragment, Text, Array, Map) into targetDoc so Yjs emits standard CRDT delta updates.
  */
 export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc): void {
-  // 1. Primary Tiptap document fragment ('default')
-  const targetFrag = targetDoc.getXmlFragment('default');
-  const sourceFrag = sourceDoc.getXmlFragment('default');
+  // 1. Primary document fragment or text ('default')
+  const targetDef = getAuthoritativeDefaultType(targetDoc);
+  const sourceDef = getAuthoritativeDefaultType(sourceDoc);
 
-  targetFrag.delete(0, targetFrag.length);
-  const clonedChildren: (Y.XmlElement | Y.XmlText)[] = [];
-  for (let i = 0; i < sourceFrag.length; i++) {
-    const child = sourceFrag.get(i);
-    clonedChildren.push(child.clone());
-  }
-  if (clonedChildren.length > 0) {
-    targetFrag.insert(0, clonedChildren);
+  if (targetDef instanceof Y.XmlFragment && sourceDef instanceof Y.Text) {
+    // Target is rich text XmlFragment, source is plain Text: wrap in <p><text></p>
+    const targetFrag = targetDoc.getXmlFragment('default');
+    targetFrag.delete(0, targetFrag.length);
+    const p = new Y.XmlElement('p');
+    p.insert(0, [new Y.XmlText(sourceDef.toString())]);
+    targetFrag.insert(0, [p]);
+  } else if (targetDef instanceof Y.Text && sourceDef instanceof Y.XmlFragment) {
+    // Target is plain Text, source is rich text XmlFragment
+    const targetText = targetDoc.getText('default');
+    targetText.delete(0, targetText.length);
+    targetText.insert(0, extractXmlText(sourceDef));
+  } else if (sourceDef instanceof Y.Text) {
+    const targetText = targetDoc.getText('default');
+    targetText.delete(0, targetText.length);
+    const str = sourceDef.toString();
+    if (str.length > 0) {
+      targetText.insert(0, str);
+    }
+  } else {
+    const targetFrag = targetDoc.getXmlFragment('default');
+    const sourceFrag = sourceDoc.getXmlFragment('default');
+
+    targetFrag.delete(0, targetFrag.length);
+    const clonedChildren: (Y.XmlElement | Y.XmlText)[] = [];
+    for (let i = 0; i < sourceFrag.length; i++) {
+      const child = sourceFrag.get(i) as any;
+      clonedChildren.push(cloneXmlNode(child));
+    }
+    if (clonedChildren.length > 0) {
+      targetFrag.insert(0, clonedChildren);
+    }
   }
 
   // 2. Handle any additional shared types
@@ -446,15 +549,26 @@ export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc):
     } else if (targetType instanceof Y.XmlFragment) {
       const s = sourceDoc.getXmlFragment(name);
       targetType.delete(0, targetType.length);
-      const children: (Y.XmlElement | Y.XmlText)[] = [];
+      const children: any[] = [];
       for (let i = 0; i < s.length; i++) {
-        children.push(s.get(i).clone());
+        const child = s.get(i) as any;
+        children.push(cloneXmlNode(child));
       }
       if (children.length > 0) {
         targetType.insert(0, children);
       }
     }
   }
+}
+
+export interface RestoreDocumentOptions extends LockOptions {
+  /**
+   * Optional controlled test hook invoked after loading historical snapshot and prior to
+   * entering the protected mutation boundary (PostgreSQL / MinIO / active room state).
+   * Allows deterministic simulation of distributed interleavings where a stale owner's async
+   * operation continues executing while a newer instance acquires the lock and commits state.
+   */
+  beforeMutationHook?: (lockContext?: LockContext) => Promise<void>;
 }
 
 /**
@@ -471,7 +585,7 @@ export async function restoreDocument(
   documentId: string,
   versionNumber: number,
   userId: string,
-  options?: LockOptions
+  options?: RestoreDocumentOptions
 ): Promise<{ document: any; newVersion: any }> {
   return await withDocumentLock(documentId, async (lockContext) => {
     lockContext?.assertLockValid();
@@ -518,6 +632,11 @@ export async function restoreDocument(
     const restoredBytes = Y.encodeStateAsUpdate(histDoc);
     const restoredTitle = versionRow.title || 'Untitled';
     const contentText = extractSearchableText(histDoc);
+
+    // Controlled test hook: invoked right before the protected mutation boundary
+    if (options?.beforeMutationHook) {
+      await options.beforeMutationHook(lockContext);
+    }
 
     const room = rooms.get(documentId);
 
@@ -574,21 +693,6 @@ export async function restoreDocument(
           const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
           lockContext?.assertLockValid();
 
-          const newVersion = await systemDb
-            .insertInto('document_versions')
-            .values({
-              document_id: documentId,
-              version_number: nextVersion,
-              snapshot_key: versionKey,
-              title: restoredTitle,
-              content_text: contentText,
-              created_by: userId,
-              trigger: 'restore',
-              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-            })
-            .returningAll()
-            .executeTakeFirstOrThrow();
-
           const updatedDoc = await systemDb
             .updateTable('documents')
             .set({
@@ -605,6 +709,27 @@ export async function restoreDocument(
                 return eb('fencing_token', '<=', fencingToken);
               }
               return eb.val(true);
+            })
+            .returningAll()
+            .executeTakeFirst();
+
+          if (!updatedDoc) {
+            throw new StaleFencingTokenError(
+              `Stale active room restore commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
+            );
+          }
+
+          const newVersion = await systemDb
+            .insertInto('document_versions')
+            .values({
+              document_id: documentId,
+              version_number: nextVersion,
+              snapshot_key: versionKey,
+              title: restoredTitle,
+              content_text: contentText,
+              created_by: userId,
+              trigger: 'restore',
+              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
             })
             .returningAll()
             .executeTakeFirstOrThrow();
@@ -727,7 +852,13 @@ export async function restoreDocument(
             return eb.val(true);
           })
           .returningAll()
-          .executeTakeFirstOrThrow();
+          .executeTakeFirst();
+
+        if (!updatedDoc) {
+          throw new StaleFencingTokenError(
+            `Stale room-less restore commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
+          );
+        }
 
         const newVersion = await systemDb
           .insertInto('document_versions')

@@ -11,23 +11,67 @@ import {
 import { StaleFencingTokenError } from '@knowledge/redis';
 import { getPgBoss, QUEUE_INDEX_DOCUMENT } from '@knowledge/jobs';
 
+/**
+ * Safely inspect and resolve the 'default' shared type on a Y.Doc without
+ * accidentally creating an incompatible constructor in doc.share.
+ */
+export function getAuthoritativeDefaultType(doc: Y.Doc): Y.XmlFragment | Y.Text {
+  const shared = doc.share.get('default');
+  if (shared instanceof Y.XmlFragment) return shared;
+  if (shared instanceof Y.Text) return shared;
+
+  if (shared && (shared as any)._start) {
+    const item = (shared as any)._start;
+    if (
+      item?.content?.type instanceof Y.XmlElement ||
+      item?.content?.type instanceof Y.XmlText ||
+      item?.content?.type instanceof Y.XmlFragment ||
+      item?.content?.constructor?.name === 'ContentType'
+    ) {
+      return doc.getXmlFragment('default');
+    }
+    if (
+      item?.content?.str !== undefined ||
+      item?.content?.constructor?.name === 'ContentString' ||
+      item?.content?.constructor?.name === 'ContentFormat'
+    ) {
+      return doc.getText('default');
+    }
+  }
+
+  return doc.getXmlFragment('default');
+}
+
 export function extractSearchableText(doc: Y.Doc): string {
   const parts: string[] = [];
 
-  for (const [, type] of doc.share.entries()) {
+  // Check 'default' shared type safely without corrupting constructor binding
+  try {
+    const defaultType = getAuthoritativeDefaultType(doc);
+    if (defaultType instanceof Y.Text) {
+      const txt = defaultType.toString().trim();
+      if (txt) parts.push(txt);
+    } else if (defaultType instanceof Y.XmlFragment) {
+      const txt = extractXmlText(defaultType).trim();
+      if (txt) parts.push(txt);
+    }
+  } catch {}
+
+  for (const [name, type] of doc.share.entries()) {
+    if (name === 'default') continue;
     if (type instanceof Y.Text) {
       const txt = type.toString().trim();
-      if (txt) parts.push(txt);
+      if (txt && !parts.includes(txt)) parts.push(txt);
     } else if (type instanceof Y.XmlFragment || type instanceof Y.XmlElement) {
       const txt = extractXmlText(type).trim();
-      if (txt) parts.push(txt);
+      if (txt && !parts.includes(txt)) parts.push(txt);
     }
   }
 
   return parts.join('\n') || '';
 }
 
-function extractXmlText(node: Y.XmlFragment | Y.XmlElement | Y.XmlText): string {
+export function extractXmlText(node: Y.XmlFragment | Y.XmlElement | Y.XmlText): string {
   if (node instanceof Y.XmlText) {
     return node.toString();
   }
@@ -163,7 +207,7 @@ export async function persistRecoverySnapshot(
     // 2. Save recovery snapshot to MinIO ONLY AFTER PostgreSQL row lock validates fencing token!
     const key = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
 
-    return await systemDb
+    const updatedDoc = await systemDb
       .updateTable('documents')
       .set({
         snapshot_key: key,
@@ -180,6 +224,14 @@ export async function persistRecoverySnapshot(
       })
       .returning(['workspace_id', 'snapshot_version'])
       .executeTakeFirst();
+
+    if (!updatedDoc) {
+      throw new StaleFencingTokenError(
+        `Stale recovery snapshot persistence for ${documentId}: fencing token ${fencingToken} superseded in DB`
+      );
+    }
+
+    return updatedDoc;
   });
 
   if (updatedDoc) {
@@ -264,21 +316,7 @@ export async function createVersionCheckpointOnSessionEnd(
       }
     }
 
-    await systemDb
-      .insertInto('document_versions')
-      .values({
-        document_id: documentId,
-        version_number: checkpointData.nextVersion,
-        snapshot_key: versionKey,
-        title: checkpointData.title,
-        content_text: contentText,
-        created_by: checkpointData.createdBy,
-        trigger: 'session_end',
-        ...(fencingToken !== undefined && fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-      })
-      .execute();
-
-    await systemDb
+    const updatedDoc = await systemDb
       .updateTable('documents')
       .set({
         snapshot_version: checkpointData.nextVersion,
@@ -293,6 +331,27 @@ export async function createVersionCheckpointOnSessionEnd(
           return eb('fencing_token', '<=', fencingToken);
         }
         return eb.val(true);
+      })
+      .returning(['id'])
+      .executeTakeFirst();
+
+    if (!updatedDoc) {
+      throw new StaleFencingTokenError(
+        `Stale checkpoint commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
+      );
+    }
+
+    await systemDb
+      .insertInto('document_versions')
+      .values({
+        document_id: documentId,
+        version_number: checkpointData.nextVersion,
+        snapshot_key: versionKey,
+        title: checkpointData.title,
+        content_text: contentText,
+        created_by: checkpointData.createdBy,
+        trigger: 'session_end',
+        ...(fencingToken !== undefined && fencingToken > 0 ? { fencing_token: fencingToken } : {}),
       })
       .execute();
 

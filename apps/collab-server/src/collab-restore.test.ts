@@ -839,11 +839,19 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       let secondRestoreOverlapped = false;
 
       // First restore: loses lock during saveRecoverySnapshot, then takes 80ms to settle
+      let callCount = 0;
       vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId, data) => {
-        firstRestoreActive = true;
-        await redis.del(`lock:document:${dId}`);
-        await new Promise((r) => setTimeout(r, 80));
-        firstRestoreActive = false;
+        callCount++;
+        if (callCount === 1) {
+          firstRestoreActive = true;
+          await redis.del(`lock:document:${dId}`);
+          await new Promise((r) => setTimeout(r, 80));
+          firstRestoreActive = false;
+          return `snapshots/${dId}/latest.yjs`;
+        }
+        if (firstRestoreActive) {
+          secondRestoreOverlapped = true;
+        }
         return `snapshots/${dId}/latest.yjs`;
       });
 
@@ -852,16 +860,9 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
         .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
         .send({ versionNumber: 1, userId });
 
-      // Second restore: runs shortly after p1 starts
+      // Second restore: launched concurrently with p1
       const p2 = (async () => {
-        await new Promise((r) => setTimeout(r, 20));
-        // Reset saveRecoverySnapshot mock for second caller
-        vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId) => {
-          if (firstRestoreActive) {
-            secondRestoreOverlapped = true;
-          }
-          return `snapshots/${dId}/latest.yjs`;
-        });
+        await new Promise((r) => setTimeout(r, 10));
         return await request(server)
           .post(`/internal/documents/${docId}/restore`)
           .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)

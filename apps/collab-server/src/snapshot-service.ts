@@ -322,18 +322,37 @@ export async function createVersionCheckpointOnSessionEnd(
   );
 
   await withSystemContext(async (systemDb) => {
-    if (fencingToken !== undefined && fencingToken > 0) {
-      const docRow = await systemDb
-        .selectFrom('documents')
-        .where('id', '=', documentId)
-        .select(['fencing_token'])
-        .forUpdate()
-        .executeTakeFirst();
-      if (docRow && Number(docRow.fencing_token || 0) > fencingToken) {
-        throw new StaleFencingTokenError(
-          `Stale checkpoint commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
-        );
-      }
+    let docQuery = systemDb
+      .selectFrom('documents')
+      .where('id', '=', documentId)
+      .select(['fencing_token']);
+    if (typeof (docQuery as any).forUpdate === 'function') {
+      docQuery = (docQuery as any).forUpdate();
+    }
+    const docRow = await docQuery.executeTakeFirst();
+
+    if (
+      fencingToken !== undefined &&
+      fencingToken > 0 &&
+      docRow &&
+      Number(docRow.fencing_token || 0) > fencingToken
+    ) {
+      throw new StaleFencingTokenError(
+        `Stale checkpoint commit for ${documentId}: token ${fencingToken} < DB token ${docRow.fencing_token}`
+      );
+    }
+
+    // Blocker 2: Verify version number allocation has not diverged under concurrent checkpoints
+    const maxResCheck = await systemDb
+      .selectFrom('document_versions')
+      .where('document_id', '=', documentId)
+      .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+      .executeTakeFirst();
+    const curMax = Number(maxResCheck?.max_ver || 0);
+    if (curMax + 1 !== checkpointData.nextVersion) {
+      throw new Error(
+        `Version divergence detected for document ${documentId}: allocated version ${checkpointData.nextVersion} but DB max version is ${curMax}`
+      );
     }
 
     const updatedDoc = await systemDb

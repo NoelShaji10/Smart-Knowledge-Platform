@@ -15,6 +15,7 @@ import {
   MESSAGE_YJS_SYNC,
 } from './room-manager';
 import * as storage from '@knowledge/storage';
+import * as database from '@knowledge/database';
 import * as snapshotService from './snapshot-service';
 
 class MockWebSocket extends EventEmitter {
@@ -41,7 +42,10 @@ class MockWebSocket extends EventEmitter {
 describe('Security Invariant: Collaboration Viewer Write Enforcement (T5)', () => {
   beforeEach(() => {
     clearAllRooms();
+    vi.spyOn(database, 'withSystemContext').mockImplementation(async () => null);
     vi.spyOn(storage, 'loadRecoverySnapshot').mockResolvedValue(null);
+    vi.spyOn(storage, 'loadRecoverySnapshotWithMetadata').mockResolvedValue(null);
+    vi.spyOn(storage, 'loadVersionSnapshot').mockResolvedValue(null);
     vi.spyOn(storage, 'saveRecoverySnapshot').mockResolvedValue('snapshots/test/latest.yjs');
     vi.spyOn(snapshotService, 'persistRecoverySnapshot').mockResolvedValue();
     vi.spyOn(snapshotService, 'createVersionCheckpointOnSessionEnd').mockResolvedValue();

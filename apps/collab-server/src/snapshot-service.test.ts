@@ -7,11 +7,20 @@ import {
 import * as snapshotService from './snapshot-service';
 import { getOrCreateRoom, clearAllRooms, removeRoomIfEmpty, getRoom } from './room-manager';
 import * as storage from '@knowledge/storage';
+import * as database from '@knowledge/database';
 
 describe('T2: Snapshot Service & Persistence', () => {
   beforeEach(() => {
     clearAllRooms();
     vi.restoreAllMocks();
+
+    vi.spyOn(database, 'withSystemContext').mockImplementation(async () => null);
+    vi.spyOn(storage, 'loadVersionSnapshot').mockImplementation(async () => null);
+    vi.spyOn(storage, 'loadRecoverySnapshotWithMetadata').mockImplementation(async (docId) => {
+      const data = await storage.loadRecoverySnapshot(docId);
+      if (!data) return null;
+      return { data, fencingToken: 0 };
+    });
   });
 
   afterEach(() => {

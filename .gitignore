@@ -33,6 +33,7 @@ Thumbs.db
 # Local Docker / data
 *.pid
 *.pid.lock
+*.rdb
 
 # Temporary files
 *.tmp

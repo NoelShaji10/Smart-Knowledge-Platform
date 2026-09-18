@@ -7,7 +7,7 @@ import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { sql } from 'kysely';
 import { withSystemContext } from '@knowledge/database';
-import { withDistributedLock, LockContext, LockOptions, StaleFencingTokenError } from '@knowledge/redis';
+import { withDistributedLock, LockContext, LockOptions, StaleFencingTokenError, LockLostError } from '@knowledge/redis';
 import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot } from '@knowledge/storage';
 import {
   loadRoomSnapshot,
@@ -197,20 +197,23 @@ export function queueRoomPersistence(room: Room): Promise<void> {
       const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
       broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
 
-      // Blocker 3: If snapshot persistence fails with StaleFencingTokenError or LockLostError:
-      if (
-        err instanceof StaleFencingTokenError ||
-        err?.name === 'StaleFencingTokenError' ||
-        err?.name === 'LockLostError'
-      ) {
-        // If room is currently undergoing restore or its fencing generation was updated by restore,
-        // this error is an expected rejection of pre-restore background work by the newer restore generation.
-        // DO NOT evict the room!
-        if (
-          room.isRestoring ||
-          (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen) ||
-          (room.fencingToken !== undefined && room.fencingToken > (seqToken || 0))
-        ) {
+      // Blocker 3 & Finding 4: Handle snapshot persistence failures
+      const isStaleToken =
+        err instanceof StaleFencingTokenError || err?.name === 'StaleFencingTokenError';
+      const isLockLost = err instanceof LockLostError || err?.name === 'LockLostError';
+
+      if (isStaleToken || isLockLost) {
+        // Only suppress room eviction for StaleFencingTokenError if the room itself advanced its generation/token
+        // (i.e. restore superseded pre-restore background persistence).
+        // LockLostError MUST ALWAYS evict the room!
+        const isPreRestoreSuperseded =
+          isStaleToken &&
+          !isLockLost &&
+          (room.isRestoring ||
+            (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen) ||
+            (room.fencingToken !== undefined && room.fencingToken > (seqToken || 0)));
+
+        if (isPreRestoreSuperseded) {
           console.info(
             `[collab-server] Pre-restore persistence for ${room.documentId} superseded gracefully without room eviction.`
           );
@@ -749,9 +752,9 @@ export async function restoreDocument(
             .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
             .executeTakeFirst();
         });
-        const nextVersion = Number(maxResPre?.max_ver || 0) + 1;
+        const allocatedVersion = Number(maxResPre?.max_ver || 0) + 1;
 
-        const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+        const versionKey = await saveVersionSnapshot(documentId, allocatedVersion, restoredBytes);
         lockContext?.assertLockValid();
 
         // Step B: PostgreSQL transaction validates fencing token under row lock,
@@ -777,6 +780,7 @@ export async function restoreDocument(
             );
           }
 
+          // Blocker 2: Verify version number allocation has not diverged under concurrent checkpoints
           const maxRes = await systemDb
             .selectFrom('document_versions')
             .where('document_id', '=', documentId)
@@ -784,7 +788,13 @@ export async function restoreDocument(
             .executeTakeFirst();
 
           lockContext?.assertLockValid();
-          const commitVersion = Number(maxRes?.max_ver || 0) + 1;
+          const currentMaxVersion = Number(maxRes?.max_ver || 0);
+          if (currentMaxVersion + 1 !== allocatedVersion) {
+            throw new Error(
+              `Version divergence detected for document ${documentId}: allocated version ${allocatedVersion} but DB max version is ${currentMaxVersion}`
+            );
+          }
+          const commitVersion = allocatedVersion;
 
           const updatedDoc = await systemDb
             .updateTable('documents')
@@ -857,18 +867,54 @@ export async function restoreDocument(
 
         // Step C: ONLY AFTER PostgreSQL transaction successfully commits:
         // Update MinIO recovery snapshot (latest.yjs) with the committed fencing token!
+        // Blocker 1: Fenced post-commit update with lock verification
         try {
+          lockContext?.assertLockValid();
+          await lockContext?.verifyOwnership();
+
           const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
           if (recoveryKey) {
             await withSystemContext(async (systemDb) => {
-              await systemDb
+              const res = await systemDb
                 .updateTable('documents')
                 .set({ snapshot_key: recoveryKey })
                 .where('id', '=', documentId)
-                .execute();
-            }).catch(() => {});
+                .where((eb) => {
+                  if (fencingToken > 0) {
+                    return eb.and([
+                      eb.or([
+                        eb('fencing_token', '<=', fencingToken),
+                        eb('fencing_token', 'is', null),
+                      ]),
+                      eb('snapshot_version', '<=', allocatedVersion),
+                    ]);
+                  }
+                  return eb('snapshot_version', '<=', allocatedVersion);
+                })
+                .executeTakeFirst();
+
+              const numUpdated = Number(res?.numUpdatedRows || 0);
+              if (numUpdated === 0) {
+                console.warn(
+                  `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
+                );
+              }
+            }).catch((dbErr) => {
+              console.warn(
+                `[collab-server] Failed to update recovery snapshot pointer in DB for ${documentId}:`,
+                dbErr
+              );
+            });
           }
-        } catch (storageErr) {
+        } catch (storageErr: any) {
+          if (
+            storageErr instanceof LockLostError ||
+            storageErr?.name === 'LockLostError' ||
+            storageErr instanceof StaleFencingTokenError ||
+            storageErr?.name === 'StaleFencingTokenError'
+          ) {
+            throw storageErr;
+          }
           console.warn(
             `[collab-server] Failed to update recovery snapshot after restore commit for ${documentId}:`,
             storageErr
@@ -883,6 +929,9 @@ export async function restoreDocument(
 
         room.lastPersistedSeq = room.docSeq || 0;
         broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, room.lastPersistedSeq);
+
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
 
         return dbResult;
       } catch (err: any) {
@@ -909,9 +958,9 @@ export async function restoreDocument(
           .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
           .executeTakeFirst();
       });
-      const nextVersion = Number(maxResPre?.max_ver || 0) + 1;
+      const allocatedVersion = Number(maxResPre?.max_ver || 0) + 1;
 
-      const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+      const versionKey = await saveVersionSnapshot(documentId, allocatedVersion, restoredBytes);
       lockContext?.assertLockValid();
 
       await lockContext?.verifyOwnership();
@@ -936,6 +985,7 @@ export async function restoreDocument(
           );
         }
 
+        // Blocker 2: Verify version number allocation has not diverged under concurrent checkpoints
         const maxRes = await systemDb
           .selectFrom('document_versions')
           .where('document_id', '=', documentId)
@@ -943,7 +993,13 @@ export async function restoreDocument(
           .executeTakeFirst();
 
         lockContext?.assertLockValid();
-        const commitVersion = Number(maxRes?.max_ver || 0) + 1;
+        const currentMaxVersion = Number(maxRes?.max_ver || 0);
+        if (currentMaxVersion + 1 !== allocatedVersion) {
+          throw new Error(
+            `Version divergence detected for document ${documentId}: allocated version ${allocatedVersion} but DB max version is ${currentMaxVersion}`
+          );
+        }
+        const commitVersion = allocatedVersion;
 
         const updatedDoc = await systemDb
           .updateTable('documents')
@@ -1015,23 +1071,62 @@ export async function restoreDocument(
       });
 
       // Step C: ONLY AFTER PostgreSQL commits: update MinIO recovery snapshot (latest.yjs)
+      // Blocker 1: Fenced post-commit update with lock verification
       try {
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
+
         const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
         if (recoveryKey) {
           await withSystemContext(async (systemDb) => {
-            await systemDb
+            const res = await systemDb
               .updateTable('documents')
               .set({ snapshot_key: recoveryKey })
               .where('id', '=', documentId)
-              .execute();
-          }).catch(() => {});
+              .where((eb) => {
+                if (fencingToken > 0) {
+                  return eb.and([
+                    eb.or([
+                      eb('fencing_token', '<=', fencingToken),
+                      eb('fencing_token', 'is', null),
+                    ]),
+                    eb('snapshot_version', '<=', allocatedVersion),
+                  ]);
+                }
+                return eb('snapshot_version', '<=', allocatedVersion);
+              })
+              .executeTakeFirst();
+
+            const numUpdated = Number(res?.numUpdatedRows || 0);
+            if (numUpdated === 0) {
+              console.warn(
+                `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
+              );
+            }
+          }).catch((dbErr) => {
+            console.warn(
+              `[collab-server] Failed to update recovery snapshot pointer in DB for ${documentId}:`,
+              dbErr
+            );
+          });
         }
-      } catch (storageErr) {
+      } catch (storageErr: any) {
+        if (
+          storageErr instanceof LockLostError ||
+          storageErr?.name === 'LockLostError' ||
+          storageErr instanceof StaleFencingTokenError ||
+          storageErr?.name === 'StaleFencingTokenError'
+        ) {
+          throw storageErr;
+        }
         console.warn(
           `[collab-server] Failed to update recovery snapshot after room-less restore commit for ${documentId}:`,
           storageErr
         );
       }
+
+      lockContext?.assertLockValid();
+      await lockContext?.verifyOwnership();
 
       return dbResult;
     }

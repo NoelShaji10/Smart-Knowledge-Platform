@@ -24,6 +24,7 @@ import {
   flushRoomPersistence,
 } from './room-manager';
 import * as storage from '@knowledge/storage';
+import * as database from '@knowledge/database';
 import * as snapshotService from './snapshot-service';
 
 class MockWebSocket extends EventEmitter {
@@ -50,7 +51,10 @@ class MockWebSocket extends EventEmitter {
 describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enforcement Integration', () => {
   beforeEach(() => {
     clearAllRooms();
+    vi.spyOn(database, 'withSystemContext').mockImplementation(async () => null);
     vi.spyOn(storage, 'loadRecoverySnapshot').mockResolvedValue(null);
+    vi.spyOn(storage, 'loadRecoverySnapshotWithMetadata').mockResolvedValue(null);
+    vi.spyOn(storage, 'loadVersionSnapshot').mockResolvedValue(null);
     vi.spyOn(storage, 'saveRecoverySnapshot').mockResolvedValue('snapshots/test/latest.yjs');
     vi.spyOn(storage, 'saveVersionSnapshot').mockResolvedValue('versions/test/1.yjs');
     vi.spyOn(snapshotService, 'persistRecoverySnapshot').mockResolvedValue();

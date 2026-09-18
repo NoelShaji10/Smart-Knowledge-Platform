@@ -80,6 +80,12 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       return storageSnapshots.get(dId) || null;
     });
 
+    vi.spyOn(storage, 'loadRecoverySnapshotWithMetadata').mockImplementation(async (dId) => {
+      const data = storageSnapshots.get(dId);
+      if (!data) return null;
+      return { data, fencingToken: 0 };
+    });
+
     vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async (dId, data) => {
       storageSnapshots.set(dId, new Uint8Array(data));
       return `snapshots/${dId}/latest.yjs`;
@@ -663,8 +669,7 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                   if (table === 'users') return { id: val };
                   if (table === 'documents') return { workspace_id: workspaceId, fencing_token: 0, is_archived: 0 };
                   if (table === 'document_versions') {
-                    currentMax += 1;
-                    return { max_ver: currentMax - 1 };
+                    return { max_ver: currentMax };
                   }
                   return null;
                 };
@@ -682,16 +687,19 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
             }),
           }),
           insertInto: () => ({
-            values: (vals: any) => ({
-              returningAll: () => ({
-                executeTakeFirstOrThrow: async () => ({
-                  id: 'new-ver-uuid',
-                  ...vals,
-                  created_at: new Date().toISOString(),
+            values: (vals: any) => {
+              currentMax = Math.max(currentMax, Number(vals.version_number || currentMax + 1));
+              return {
+                returningAll: () => ({
+                  executeTakeFirstOrThrow: async () => ({
+                    id: 'new-ver-uuid',
+                    ...vals,
+                    created_at: new Date().toISOString(),
+                  }),
                 }),
-              }),
-              execute: async () => {},
-            }),
+                execute: async () => {},
+              };
+            },
           }),
           updateTable: () => ({
             set: (sets: any) => {
@@ -708,6 +716,7 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                   executeTakeFirstOrThrow: async () => res,
                   executeTakeFirst: async () => res,
                 }),
+                executeTakeFirst: async () => ({ numUpdatedRows: 1n }),
                 execute: async () => {},
               };
               return updateBuilder;
@@ -761,10 +770,10 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       const redis = redisModule.getRedisClient();
       let dbInsertAttempted = false;
 
-      // Mock saveRecoverySnapshot to delete lock
-      vi.spyOn(storage, 'saveRecoverySnapshot').mockImplementation(async () => {
-        await redis.del(`lock:document:${docId}`);
-        return `snapshots/${docId}/latest.yjs`;
+      // Mock saveVersionSnapshot to delete lock mid-flight before DB transaction
+      vi.spyOn(storage, 'saveVersionSnapshot').mockImplementation(async (dId, ver) => {
+        await redis.del(`lock:document:${dId}`);
+        return `versions/${dId}/${ver}.yjs`;
       });
 
       // Spy on withSystemContext to check if document_versions insert was attempted after lock loss
@@ -797,27 +806,43 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
                 }),
               }),
               selectAll: () => ({ executeTakeFirst: async () => null }),
-              select: () => ({
-                executeTakeFirst: async () => {
-                  if (table === 'users') return { id: userId };
-                  if (table === 'documents') return { workspace_id: workspaceId, is_archived: 0 };
-                  if (table === 'document_versions') return { max_ver: 2 };
-                  return null;
-                },
-              }),
+              select: () => {
+                const selBuilder: any = {
+                  forUpdate: () => selBuilder,
+                  executeTakeFirst: async () => {
+                    if (table === 'users') return { id: userId };
+                    if (table === 'documents') return { workspace_id: workspaceId, fencing_token: 0, is_archived: 0 };
+                    if (table === 'document_versions') return { max_ver: 2 };
+                    return null;
+                  },
+                  executeTakeFirstOrThrow: async () => {
+                    if (table === 'users') return { id: userId };
+                    if (table === 'documents') return { workspace_id: workspaceId, fencing_token: 0, is_archived: 0 };
+                    if (table === 'document_versions') return { max_ver: 2 };
+                    throw new Error('Not found');
+                  },
+                };
+                return selBuilder;
+              },
             }),
           }),
           insertInto: () => {
             dbInsertAttempted = true;
             throw new Error('Should not reach database insert after lock loss!');
           },
-          updateTable: () => ({
-            set: () => ({
-              where: () => ({
-                returningAll: () => ({ executeTakeFirstOrThrow: async () => ({}) }),
+          updateTable: () => {
+            const updBuilder: any = {
+              where: () => updBuilder,
+              returningAll: () => ({
+                executeTakeFirstOrThrow: async () => ({}),
+                executeTakeFirst: async () => ({}),
               }),
-            }),
-          }),
+              executeTakeFirst: async () => ({}),
+            };
+            return {
+              set: () => updBuilder,
+            };
+          },
         };
         return await fn(mockSystemDb);
       });

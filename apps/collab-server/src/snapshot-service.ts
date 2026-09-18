@@ -143,16 +143,36 @@ export async function loadRoomSnapshot(documentId: string, doc: Y.Doc): Promise<
     }
 
     // 3. Compare object fencing token against authoritative DB fencing token:
-    // If metadata is missing, malformed, or older than DB fencing token, DO NOT hydrate from that object!
-    if (
-      recoveryResult &&
-      recoveryResult.fencingToken !== undefined &&
-      !isNaN(recoveryResult.fencingToken) &&
-      recoveryResult.fencingToken >= dbFencingToken &&
-      recoveryResult.data.length > 0
-    ) {
+    // Invariant: PostgreSQL committed state is authoritative.
+    // - If recoveryResult.fencingToken > dbFencingToken: The recovery object was written with an uncommitted or aborted fencing generation! It MUST be rejected.
+    // - If recoveryResult.fencingToken < dbFencingToken: The recovery object is stale! It MUST be rejected.
+    // - If recoveryResult.fencingToken === dbFencingToken: The recovery object matches the authoritative DB fencing generation.
+    const isFencingMatch = docRow
+      ? recoveryResult &&
+        recoveryResult.fencingToken !== undefined &&
+        !isNaN(recoveryResult.fencingToken) &&
+        recoveryResult.fencingToken === dbFencingToken &&
+        recoveryResult.data.length > 0
+      : recoveryResult &&
+        recoveryResult.fencingToken !== undefined &&
+        !isNaN(recoveryResult.fencingToken) &&
+        recoveryResult.fencingToken >= dbFencingToken &&
+        recoveryResult.data.length > 0;
+
+    if (isFencingMatch && recoveryResult) {
       Y.applyUpdate(doc, recoveryResult.data);
       return true;
+    }
+
+    if (
+      recoveryResult &&
+      docRow &&
+      recoveryResult.fencingToken !== undefined &&
+      recoveryResult.fencingToken > dbFencingToken
+    ) {
+      console.warn(
+        `[collab-server] Rejecting uncommitted/aborted recovery snapshot for ${documentId}: recovery token ${recoveryResult.fencingToken} > authoritative DB token ${dbFencingToken}`
+      );
     }
 
     // 4. Fallback to DB-authoritative version snapshot using snapshot_version

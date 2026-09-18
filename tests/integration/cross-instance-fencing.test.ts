@@ -431,6 +431,32 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     expect(testDoc2.getText('default').toString()).toBe('Authoritative Version 2 Content From DB');
     expect(testDoc2.getText('default').toString()).not.toContain('Stale Uncommitted Bytes');
 
+    // 5. BLK-2 Regression: Test uncommitted/aborted recovery snapshot with fencing token > DB token:
+    // MinIO contains token 11 while PostgreSQL remains at token 10!
+    const ydocUncommitted = new Y.Doc();
+    ydocUncommitted.getText('default').insert(0, 'Uncommitted Aborted Bytes from Rollback');
+    const uncommittedBytes = Y.encodeStateAsUpdate(ydocUncommitted);
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_SNAPSHOTS,
+        Key: `${docId}/latest.yjs`,
+        Body: Buffer.from(uncommittedBytes),
+        ContentType: 'application/octet-stream',
+        Metadata: {
+          'fencing-token': '11', // Greater than DB fencing token 10 (uncommitted/aborted state!)
+        },
+      })
+    );
+
+    const testDoc3 = new Y.Doc();
+    const loaded3 = await loadRoomSnapshot(docId, testDoc3);
+
+    // INVARIANT: The uncommitted snapshot (token 11) MUST be rejected, falling back to authoritative DB version!
+    expect(loaded3).toBe(true);
+    expect(testDoc3.getText('default').toString()).toBe('Authoritative Version 2 Content From DB');
+    expect(testDoc3.getText('default').toString()).not.toContain('Uncommitted Aborted Bytes');
+
     await redis.del(`fence:document:${docId}`);
   });
 
@@ -893,5 +919,171 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     expect(loadedYDoc.getText('default').toString()).toBe('Authoritative State From Instance B');
 
     await redis.del(`fence:${resourceKey}`);
+  });
+
+  it('14. BLK-1 Regression: Formatted rich text (bold, italic, code, links) survives full restoreDocument() pipeline without tag injection or data loss', async () => {
+    const doc = await createTestDoc('Rich Text Formatting Restore Doc');
+    const docId = doc.id;
+
+    // 1. Build historical version 1 with rich-text ProseMirror/Tiptap structure:
+    // <p><text with bold, italic, code, link></p>
+    const histYDoc = new Y.Doc();
+    const histFrag = histYDoc.getXmlFragment('default');
+    const p1 = new Y.XmlElement('p');
+    const t1 = new Y.XmlText();
+    p1.insert(0, [t1]);
+    histFrag.insert(0, [p1]);
+
+    // Apply rich-text formatting delta:
+    t1.applyDelta([
+      { insert: 'Rich text with ' },
+      { insert: 'bold formatting', attributes: { bold: true } },
+      { insert: ', ' },
+      { insert: 'italic formatting', attributes: { italic: true } },
+      { insert: ', ' },
+      { insert: 'inline code', attributes: { code: true } },
+      { insert: ', and ' },
+      { insert: 'hyperlink', attributes: { link: { href: 'https://knowledge.platform/doc' } } },
+    ]);
+
+    const histBytes = Y.encodeStateAsUpdate(histYDoc);
+    await saveVersionSnapshot(docId, 1, histBytes);
+
+    await withSystemContext(async (db) => {
+      await db
+        .insertInto('document_versions')
+        .values({
+          document_id: docId,
+          version_number: 1,
+          snapshot_key: `versions/${docId}/1.yjs`,
+          title: 'Formatted V1',
+          content_text: 'Rich text with bold formatting, italic formatting, inline code, and hyperlink',
+          created_by: userId,
+          trigger: 'manual',
+        })
+        .execute();
+    });
+
+    // 2. Establish active room with dummy/modified content
+    const room = await getOrCreateRoom(docId);
+    room.doc.getText('default').insert(0, 'Unrelated pre-restore draft');
+
+    // 3. Execute restoreDocument() to restore Version 1
+    const restoreResult = await restoreDocument(docId, 1, userId);
+    expect(restoreResult.newVersion).toBeDefined();
+
+    // 4. VERIFY RESTORED ROOM DOC IN-MEMORY:
+    const restoredFrag = room.doc.getXmlFragment('default');
+    expect(restoredFrag.length).toBeGreaterThanOrEqual(1);
+
+    const restoredP = restoredFrag.get(0) as Y.XmlElement;
+    expect(restoredP).toBeInstanceOf(Y.XmlElement);
+    expect(restoredP.nodeName).toBe('p');
+
+    const restoredText = restoredP.get(0) as Y.XmlText;
+    expect(restoredText).toBeInstanceOf(Y.XmlText);
+
+    // Assert delta attributes are 100% preserved:
+    const delta = restoredText.toDelta();
+    expect(delta).toEqual([
+      { insert: 'Rich text with ' },
+      { insert: 'bold formatting', attributes: { bold: true } },
+      { insert: ', ' },
+      { insert: 'italic formatting', attributes: { italic: true } },
+      { insert: ', ' },
+      { insert: 'inline code', attributes: { code: true } },
+      { insert: ', and ' },
+      { insert: 'hyperlink', attributes: { link: { href: 'https://knowledge.platform/doc' } } },
+    ]);
+
+    // Assert that NO literal pseudo-XML tags leaked into string text content!
+    const rawString = restoredText.toString();
+    expect(rawString).not.toContain('<bold><bold>');
+    expect(rawString).not.toContain('&lt;bold&gt;');
+    // The clean plain-text string representation should have formatting tags stripped or pure
+    expect(delta.map((d: any) => d.insert).join('')).toBe(
+      'Rich text with bold formatting, italic formatting, inline code, and hyperlink'
+    );
+
+    await redis.del(`fence:document:${docId}`);
+  });
+
+  it('15. BLK-3 Regression: In-flight background persistence does not evict active room or disconnect clients during restoreDocument()', async () => {
+    const doc = await createTestDoc('In-Flight Persistence Non-Eviction Doc');
+    const docId = doc.id;
+
+    // 1. Seed Version 1
+    const ydoc1 = new Y.Doc();
+    ydoc1.getText('default').insert(0, 'Historical Version 1');
+    await saveVersionSnapshot(docId, 1, Y.encodeStateAsUpdate(ydoc1));
+
+    await withSystemContext(async (db) => {
+      await db
+        .insertInto('document_versions')
+        .values({
+          document_id: docId,
+          version_number: 1,
+          snapshot_key: `versions/${docId}/1.yjs`,
+          title: 'V1',
+          content_text: 'Historical Version 1',
+          created_by: userId,
+          trigger: 'manual',
+        })
+        .execute();
+    });
+
+    // 2. Open active room and attach client connection
+    const room = await getOrCreateRoom(docId);
+    let wsClosed = false;
+    let wsCloseCode = 0;
+    let wsCloseReason = '';
+
+    const mockWs: any = {
+      readyState: 1,
+      send: () => {},
+      close: (code: number, reason: string) => {
+        wsClosed = true;
+        wsCloseCode = code;
+        wsCloseReason = reason;
+      },
+    };
+
+    room.connections.add({
+      id: 'conn-active-restore',
+      ws: mockWs,
+      userId,
+      workspaceId,
+      documentId: docId,
+      canEdit: true,
+      effectiveRole: 'editor',
+    });
+
+    // 3. Simulate an in-flight background persistence promise that resolves after restore starts
+    let inFlightSettled = false;
+    room.inFlightPersistence = (async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      inFlightSettled = true;
+    })();
+
+    // 4. Start restoreDocument() while inFlightPersistence is running
+    const restorePromise = restoreDocument(docId, 1, userId);
+    const result = await restorePromise;
+
+    // 5. VERIFICATION:
+    expect(result.newVersion).toBeDefined();
+    expect(inFlightSettled).toBe(true);
+
+    // Active room MUST NOT be evicted!
+    expect(getRoom(docId)).toBe(room);
+    expect(room.isClosing).toBeFalsy();
+
+    // Client connection MUST NOT receive WebSocket close code 4009!
+    expect(wsClosed).toBe(false);
+    expect(wsCloseCode).toBe(0);
+
+    // Room Y.Doc must have converged to restored content
+    expect(room.doc.getText('default').toString()).toBe('Historical Version 1');
+
+    await redis.del(`fence:document:${docId}`);
   });
 });

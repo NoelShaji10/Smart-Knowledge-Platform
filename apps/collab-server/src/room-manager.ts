@@ -48,6 +48,8 @@ export interface Room {
   inFlightPersistence: Promise<void> | null;
   queuedPersistenceSeq: number | null;
   fencingToken?: number;
+  isRestoring?: boolean;
+  persistenceGeneration?: number;
 }
 
 export function broadcastPersistence(
@@ -181,6 +183,8 @@ export function queueRoomPersistence(room: Room): Promise<void> {
   }
 
   const seqToPersist = room.docSeq || 0;
+  const seqToken = room.fencingToken;
+  const persistenceGen = room.persistenceGeneration || 0;
   broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTING, seqToPersist);
 
   const promise = (async () => {
@@ -194,18 +198,30 @@ export function queueRoomPersistence(room: Room): Promise<void> {
       broadcastPersistence(room, PERSISTENCE_STATUS_ERROR, seqToPersist, errorMsg);
 
       // Blocker 3: If snapshot persistence fails with StaleFencingTokenError or LockLostError:
-      // Immediately evict the room, close WebSockets with code 4009, destroy doc, and remove from rooms!
       if (
         err instanceof StaleFencingTokenError ||
         err?.name === 'StaleFencingTokenError' ||
         err?.name === 'LockLostError'
       ) {
-        evictRoom(room, 'Document superseded');
+        // If room is currently undergoing restore or its fencing generation was updated by restore,
+        // this error is an expected rejection of pre-restore background work by the newer restore generation.
+        // DO NOT evict the room!
+        if (
+          room.isRestoring ||
+          (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen) ||
+          (room.fencingToken !== undefined && room.fencingToken > (seqToken || 0))
+        ) {
+          console.info(
+            `[collab-server] Pre-restore persistence for ${room.documentId} superseded gracefully without room eviction.`
+          );
+        } else {
+          evictRoom(room, 'Document superseded');
+        }
       }
       throw err;
     } finally {
       room.inFlightPersistence = null;
-      if (room.isClosing) {
+      if (room.isClosing || room.isRestoring) {
         room.queuedPersistenceSeq = null;
       } else if (room.queuedPersistenceSeq !== null && room.queuedPersistenceSeq !== undefined) {
         const nextSeq = room.queuedPersistenceSeq;
@@ -445,7 +461,19 @@ export function clearAllRooms(): void {
 
 function cloneXmlNode(node: any): Y.XmlElement | Y.XmlText {
   if (node instanceof Y.XmlText || node?.constructor?.name === 'XmlText' || node?.nodeName === undefined) {
-    return new Y.XmlText(node.toString());
+    const cloned = new Y.XmlText();
+    if (typeof node.toDelta === 'function') {
+      const delta = node.toDelta();
+      if (Array.isArray(delta) && delta.length > 0) {
+        cloned.applyDelta(delta);
+      }
+    } else {
+      const str = typeof node.toString === 'function' ? node.toString() : String(node ?? '');
+      if (str.length > 0) {
+        cloned.insert(0, str);
+      }
+    }
+    return cloned;
   }
   const el = new Y.XmlElement(node.nodeName);
   const attrs = typeof node.getAttributes === 'function' ? node.getAttributes() : {};
@@ -479,7 +507,17 @@ export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc):
     const targetFrag = targetDoc.getXmlFragment('default');
     targetFrag.delete(0, targetFrag.length);
     const p = new Y.XmlElement('p');
-    p.insert(0, [new Y.XmlText(sourceDef.toString())]);
+    const text = new Y.XmlText();
+    if (typeof sourceDef.toDelta === 'function') {
+      const delta = sourceDef.toDelta();
+      if (Array.isArray(delta) && delta.length > 0) {
+        text.applyDelta(delta);
+      }
+    } else {
+      const str = sourceDef.toString();
+      if (str.length > 0) text.insert(0, str);
+    }
+    p.insert(0, [text]);
     targetFrag.insert(0, [p]);
   } else if (targetDef instanceof Y.Text && sourceDef instanceof Y.XmlFragment) {
     // Target is plain Text, source is rich text XmlFragment
@@ -489,9 +527,16 @@ export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc):
   } else if (sourceDef instanceof Y.Text) {
     const targetText = targetDoc.getText('default');
     targetText.delete(0, targetText.length);
-    const str = sourceDef.toString();
-    if (str.length > 0) {
-      targetText.insert(0, str);
+    if (typeof sourceDef.toDelta === 'function') {
+      const delta = sourceDef.toDelta();
+      if (Array.isArray(delta) && delta.length > 0) {
+        targetText.applyDelta(delta);
+      }
+    } else {
+      const str = sourceDef.toString();
+      if (str.length > 0) {
+        targetText.insert(0, str);
+      }
     }
   } else {
     const targetFrag = targetDoc.getXmlFragment('default');
@@ -522,9 +567,16 @@ export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc):
     if (targetType instanceof Y.Text) {
       const s = sourceDoc.getText(name);
       targetType.delete(0, targetType.length);
-      const str = s.toString();
-      if (str.length > 0) {
-        targetType.insert(0, str);
+      if (typeof s.toDelta === 'function') {
+        const delta = s.toDelta();
+        if (Array.isArray(delta) && delta.length > 0) {
+          targetType.applyDelta(delta);
+        }
+      } else {
+        const str = s.toString();
+        if (str.length > 0) {
+          targetType.insert(0, str);
+        }
       }
     } else if (targetType instanceof Y.Array) {
       const s = sourceDoc.getArray(name);
@@ -621,12 +673,25 @@ export async function restoreDocument(
         console.error(`[collab-server] Corrupt version snapshot for doc ${documentId} v${versionNumber}:`, err);
         throw new Error('Historical version snapshot is corrupt or invalid');
       }
-    } else if (versionRow.content_text !== null && versionRow.content_text !== undefined) {
-      // Fallback for legacy checkpoints created before full snapshot storage
+    } else if (versionRow.content_text && versionRow.content_text.trim().length > 0) {
+      // Fallback for legacy checkpoints created before full snapshot storage with non-empty text
       const frag = histDoc.getXmlFragment('default');
       const p = new Y.XmlElement('p');
-      p.insert(0, [new Y.XmlText(versionRow.content_text)]);
+      const t = new Y.XmlText();
+      t.insert(0, versionRow.content_text);
+      p.insert(0, [t]);
       frag.insert(0, [p]);
+    } else if (versionRow.snapshot_key) {
+      // If a snapshot_key was registered for this version, but loadVersionSnapshot returned null/empty,
+      // the snapshot is missing/lost! Fail closed: DO NOT restore an empty document!
+      throw new Error(`Historical version snapshot is missing or unavailable for version ${versionNumber}`);
+    } else if (versionRow.content_text === '' || versionRow.content_text === null) {
+      // Only permit empty document if explicitly recorded as an empty version with no snapshot_key
+      const frag = histDoc.getXmlFragment('default');
+      const p = new Y.XmlElement('p');
+      frag.insert(0, [p]);
+    } else {
+      throw new Error(`Historical version ${versionNumber} has no restorable content or snapshot`);
     }
 
     const restoredBytes = Y.encodeStateAsUpdate(histDoc);
@@ -642,6 +707,25 @@ export async function restoreDocument(
 
     if (room) {
       // CASE 1: ACTIVE ROOM RESTORE
+      room.isRestoring = true;
+      room.persistenceGeneration = (room.persistenceGeneration || 0) + 1;
+
+      // 1. Cancel pending debounced persistence
+      if (room.debounceTimer) {
+        clearTimeout(room.debounceTimer);
+        room.debounceTimer = null;
+      }
+      room.queuedPersistenceSeq = null;
+
+      // 2. Drain any in-flight persistence operation before starting the restore
+      if (room.inFlightPersistence) {
+        try {
+          await room.inFlightPersistence;
+        } catch {
+          // In-flight persistence errors are safely caught; pre-restore work is superseded
+        }
+      }
+
       try {
         lockContext?.assertLockValid();
 
@@ -656,7 +740,24 @@ export async function restoreDocument(
         await lockContext?.verifyOwnership();
         lockContext?.assertLockValid();
 
-        // 4 & 5. Perform PostgreSQL fencing validation & commit the restored document/version state FIRST!
+        // Step A: Save immutable version snapshot FIRST (fail closed if storage fails)
+        // This is safe because version snapshots are immutable and only referenced if DB commits.
+        const maxResPre = await withSystemContext(async (systemDb) => {
+          return await systemDb
+            .selectFrom('document_versions')
+            .where('document_id', '=', documentId)
+            .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+            .executeTakeFirst();
+        });
+        const nextVersion = Number(maxResPre?.max_ver || 0) + 1;
+
+        const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
+        lockContext?.assertLockValid();
+
+        // Step B: PostgreSQL transaction validates fencing token under row lock,
+        // updates document to point to versionKey, inserts document_versions, and inserts audit_event.
+        // NOTE: MinIO recovery snapshot (latest.yjs) is NOT written yet!
+        // This guarantees that if this DB transaction fails/aborts, MinIO latest.yjs is UNTOUCHED!
         const dbResult = await withSystemContext(async (systemDb) => {
           lockContext?.assertLockValid();
 
@@ -683,30 +784,25 @@ export async function restoreDocument(
             .executeTakeFirst();
 
           lockContext?.assertLockValid();
-          const nextVersion = Number(maxRes?.max_ver || 0) + 1;
-
-          // Save version snapshot for new checkpoint (fail closed if storage fails)
-          const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
-          lockContext?.assertLockValid();
-
-          // Save recovery snapshot with fencing token
-          const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
-          lockContext?.assertLockValid();
+          const commitVersion = Number(maxRes?.max_ver || 0) + 1;
 
           const updatedDoc = await systemDb
             .updateTable('documents')
             .set({
               title: restoredTitle,
               content_text: contentText,
-              snapshot_key: recoveryKey || versionKey,
-              snapshot_version: nextVersion,
+              snapshot_key: versionKey,
+              snapshot_version: commitVersion,
               ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
               updated_at: new Date(),
             })
             .where('id', '=', documentId)
             .where((eb) => {
               if (fencingToken > 0) {
-                return eb('fencing_token', '<=', fencingToken);
+                return eb.or([
+                  eb('fencing_token', '<=', fencingToken),
+                  eb('fencing_token', 'is', null),
+                ]);
               }
               return eb.val(true);
             })
@@ -723,7 +819,7 @@ export async function restoreDocument(
             .insertInto('document_versions')
             .values({
               document_id: documentId,
-              version_number: nextVersion,
+              version_number: commitVersion,
               snapshot_key: versionKey,
               title: restoredTitle,
               content_text: contentText,
@@ -744,7 +840,7 @@ export async function restoreDocument(
               resource_id: documentId,
               metadata: JSON.stringify({
                 restoredVersionNumber: versionNumber,
-                newVersionNumber: nextVersion,
+                newVersionNumber: commitVersion,
               }),
               ip_address: null,
               user_agent: null,
@@ -759,28 +855,37 @@ export async function restoreDocument(
           };
         });
 
-        // 6. Only AFTER the DB transaction succeeds:
-        // Update room fencing token
-        room.fencingToken = fencingToken;
+        // Step C: ONLY AFTER PostgreSQL transaction successfully commits:
+        // Update MinIO recovery snapshot (latest.yjs) with the committed fencing token!
+        try {
+          const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+          if (recoveryKey) {
+            await withSystemContext(async (systemDb) => {
+              await systemDb
+                .updateTable('documents')
+                .set({ snapshot_key: recoveryKey })
+                .where('id', '=', documentId)
+                .execute();
+            }).catch(() => {});
+          }
+        } catch (storageErr) {
+          console.warn(
+            `[collab-server] Failed to update recovery snapshot after restore commit for ${documentId}:`,
+            storageErr
+          );
+        }
 
-        // Apply historical state to room.doc inside a transaction
-        // room.doc.on('update') will automatically broadcast MESSAGE_YJS_SYNC to all connected clients!
+        // Step D: Update in-memory room state and broadcast to clients
+        room.fencingToken = fencingToken;
         room.doc.transact(() => {
           applyHistoricalDocToRoomDoc(room.doc, histDoc);
         });
 
-        if (room.debounceTimer) {
-          clearTimeout(room.debounceTimer);
-          room.debounceTimer = null;
-        }
         room.lastPersistedSeq = room.docSeq || 0;
         broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, room.lastPersistedSeq);
 
         return dbResult;
       } catch (err: any) {
-        // Failure handling:
-        // If the active-room restore fails because of StaleFencingTokenError or LockLostError:
-        // immediately evict the affected room!
         if (
           err instanceof StaleFencingTokenError ||
           err?.name === 'StaleFencingTokenError' ||
@@ -789,23 +894,33 @@ export async function restoreDocument(
           evictRoom(room, 'Document superseded');
         }
         throw err;
+      } finally {
+        room.isRestoring = false;
       }
     } else {
       // CASE 2: ROOM-LESS RESTORE (under the exact same document lock)
       lockContext?.assertLockValid();
 
-      // 1. Persist restored state to MinIO recovery snapshot (latest.yjs) with fencing token validation
-      const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+      // Step A: Save immutable version snapshot FIRST
+      const maxResPre = await withSystemContext(async (systemDb) => {
+        return await systemDb
+          .selectFrom('document_versions')
+          .where('document_id', '=', documentId)
+          .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+          .executeTakeFirst();
+      });
+      const nextVersion = Number(maxResPre?.max_ver || 0) + 1;
+
+      const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
       lockContext?.assertLockValid();
 
-      // 2. Verify lock ownership before committing checkpoint to DB
       await lockContext?.verifyOwnership();
       lockContext?.assertLockValid();
 
-      return await withSystemContext(async (systemDb) => {
+      // Step B: PostgreSQL commit FIRST
+      const dbResult = await withSystemContext(async (systemDb) => {
         lockContext?.assertLockValid();
 
-        // 1. Validate DB fencing token under row lock
         let docQuery = systemDb
           .selectFrom('documents')
           .where('id', '=', documentId)
@@ -828,26 +943,25 @@ export async function restoreDocument(
           .executeTakeFirst();
 
         lockContext?.assertLockValid();
-        const nextVersion = Number(maxRes?.max_ver || 0) + 1;
-
-        // Save version snapshot for new checkpoint (fail closed if storage fails)
-        const versionKey = await saveVersionSnapshot(documentId, nextVersion, restoredBytes);
-        lockContext?.assertLockValid();
+        const commitVersion = Number(maxRes?.max_ver || 0) + 1;
 
         const updatedDoc = await systemDb
           .updateTable('documents')
           .set({
             title: restoredTitle,
             content_text: contentText,
-            snapshot_key: recoveryKey || versionKey,
-            snapshot_version: nextVersion,
+            snapshot_key: versionKey,
+            snapshot_version: commitVersion,
             ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
             updated_at: new Date(),
           })
           .where('id', '=', documentId)
           .where((eb) => {
             if (fencingToken > 0) {
-              return eb('fencing_token', '<=', fencingToken);
+              return eb.or([
+                eb('fencing_token', '<=', fencingToken),
+                eb('fencing_token', 'is', null),
+              ]);
             }
             return eb.val(true);
           })
@@ -864,7 +978,7 @@ export async function restoreDocument(
           .insertInto('document_versions')
           .values({
             document_id: documentId,
-            version_number: nextVersion,
+            version_number: commitVersion,
             snapshot_key: versionKey,
             title: restoredTitle,
             content_text: contentText,
@@ -885,7 +999,7 @@ export async function restoreDocument(
             resource_id: documentId,
             metadata: JSON.stringify({
               restoredVersionNumber: versionNumber,
-              newVersionNumber: nextVersion,
+              newVersionNumber: commitVersion,
             }),
             ip_address: null,
             user_agent: null,
@@ -899,6 +1013,27 @@ export async function restoreDocument(
           newVersion,
         };
       });
+
+      // Step C: ONLY AFTER PostgreSQL commits: update MinIO recovery snapshot (latest.yjs)
+      try {
+        const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+        if (recoveryKey) {
+          await withSystemContext(async (systemDb) => {
+            await systemDb
+              .updateTable('documents')
+              .set({ snapshot_key: recoveryKey })
+              .where('id', '=', documentId)
+              .execute();
+          }).catch(() => {});
+        }
+      } catch (storageErr) {
+        console.warn(
+          `[collab-server] Failed to update recovery snapshot after room-less restore commit for ${documentId}:`,
+          storageErr
+        );
+      }
+
+      return dbResult;
     }
   }, options);
 }

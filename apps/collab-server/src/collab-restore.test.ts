@@ -12,6 +12,7 @@ import {
   removeConnectionFromRoom,
   clearAllRooms,
   getRoom,
+  restoreDocument,
   restoreActiveRoom,
   applyHistoricalDocToRoomDoc,
   ClientConnection,
@@ -873,6 +874,115 @@ describe('Phase 5 T4: Production-Grade Version History & Restore', () => {
       expect(res1.status).toBe(500); // First failed closed due to lock loss
       expect(res2.status).toBe(200); // Second succeeded once first settled
       expect(secondRestoreOverlapped).toBe(false); // Never overlapped!
+    });
+
+    it('BLK-1 regression: applyHistoricalDocToRoomDoc preserves formatting marks (bold, italic, code, links) and avoids pseudo-XML text injection', () => {
+      const sourceDoc = new Y.Doc();
+      const sourceFrag = sourceDoc.getXmlFragment('default');
+      const p = new Y.XmlElement('p');
+      const text = new Y.XmlText();
+      p.insert(0, [text]);
+      sourceFrag.insert(0, [p]);
+
+      text.applyDelta([
+        { insert: 'Hello ' },
+        { insert: 'bold', attributes: { bold: true } },
+        { insert: ' and ' },
+        { insert: 'italic', attributes: { italic: true } },
+        { insert: ' with ' },
+        { insert: 'code', attributes: { code: true } },
+        { insert: ' and ' },
+        { insert: 'link', attributes: { link: { href: 'https://example.com' } } },
+      ]);
+
+      const targetDoc = new Y.Doc();
+      targetDoc.getXmlFragment('default').insert(0, [new Y.XmlElement('p')]);
+
+      // Apply historical doc
+      applyHistoricalDocToRoomDoc(targetDoc, sourceDoc);
+
+      const targetFrag = targetDoc.getXmlFragment('default');
+      expect(targetFrag.length).toBe(1);
+      const targetP = targetFrag.get(0) as Y.XmlElement;
+      expect(targetP.nodeName).toBe('p');
+      const targetText = targetP.get(0) as Y.XmlText;
+
+      // Delta formatting must be 100% preserved
+      const delta = targetText.toDelta();
+      expect(delta).toEqual([
+        { insert: 'Hello ' },
+        { insert: 'bold', attributes: { bold: true } },
+        { insert: ' and ' },
+        { insert: 'italic', attributes: { italic: true } },
+        { insert: ' with ' },
+        { insert: 'code', attributes: { code: true } },
+        { insert: ' and ' },
+        { insert: 'link', attributes: { link: { href: 'https://example.com' } } },
+      ]);
+
+      // toString() must NOT leak literal <bold><bold> or escaped tags
+      const str = targetText.toString();
+      expect(str).not.toContain('&lt;bold&gt;');
+      expect(str).not.toContain('<bold><bold>');
+    });
+
+    it('CONCERN-2 regression: fails closed when historical snapshot_key exists but snapshot is missing in MinIO', async () => {
+      vi.spyOn(storage, 'loadVersionSnapshot').mockResolvedValue(null);
+
+      vi.spyOn(database, 'withSystemContext').mockImplementation(async (fn: any) => {
+        const mockSystemDb: any = {
+          selectFrom: (table: string) => ({
+            where: () => ({
+              where: () => ({
+                selectAll: () => ({
+                  executeTakeFirst: async () => ({
+                    id: 'ver-missing-snapshot',
+                    document_id: docId,
+                    version_number: 1,
+                    snapshot_key: `versions/${docId}/1.yjs`, // snapshot_key is recorded
+                    title: 'Version with Missing Snapshot',
+                    content_text: '', // Empty text
+                    created_by: userId,
+                    trigger: 'manual',
+                  }),
+                }),
+              }),
+            }),
+          }),
+        };
+        return await fn(mockSystemDb);
+      });
+
+      // Restore must throw and NOT restore an empty document!
+      await expect(restoreDocument(docId, 1, userId)).rejects.toThrow(
+        /Historical version snapshot is missing or unavailable/
+      );
+    });
+
+    it('CONCERN-4 regression: enforces 64KB payload size limit (413 Payload Too Large) on internal restore endpoint', async () => {
+      const hugeString = 'x'.repeat(70 * 1024); // 70 KB payload
+
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/restore`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY)
+        .send({ versionNumber: 1, userId, padding: hugeString });
+
+      expect(res.status).toBe(413);
+      expect(res.body.error).toBe('Payload Too Large');
+    });
+
+    it('CONCERN-1 regression: /flush endpoint flushes active room and returns 200', async () => {
+      const room = await getOrCreateRoom(docId);
+      expect(room).toBeDefined();
+
+      const res = await request(server)
+        .post(`/internal/documents/${docId}/flush`)
+        .set('x-internal-key', getEnv().INTERNAL_SERVICE_KEY);
+
+      expect(res.status).toBe(200);
+      expect(res.body.active).toBe(true);
+
+      clearAllRooms();
     });
   });
 });

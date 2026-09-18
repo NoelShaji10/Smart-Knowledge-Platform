@@ -214,6 +214,34 @@ export function createCollabServer() {
       return;
     }
 
+    const flushMatch = req.method === 'POST' && req.url?.match(/^\/internal\/documents\/([^/]+)\/flush$/);
+    if (flushMatch) {
+      const documentId = flushMatch[1];
+      const expectedKey = getEnv().INTERNAL_SERVICE_KEY;
+      const providedKey = req.headers['x-internal-key'];
+      if (!providedKey || providedKey !== expectedKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized internal service request' }));
+        return;
+      }
+
+      const room = getRoom(documentId);
+      if (room) {
+        try {
+          await flushRoomPersistence(room);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ active: true, persistedSeq: room.lastPersistedSeq }));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err?.message || 'Flush error' }));
+        }
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ active: false }));
+      }
+      return;
+    }
+
     const restoreMatch = req.method === 'POST' && req.url?.match(/^\/internal\/documents\/([^/]+)\/restore$/);
     if (restoreMatch) {
       const documentId = restoreMatch[1];
@@ -228,10 +256,26 @@ export function createCollabServer() {
       }
 
       let bodyStr = '';
+      let bodyLength = 0;
+      const MAX_PAYLOAD_BYTES = 64 * 1024; // 64 KB limit
+      let bodyTooLarge = false;
+
       req.on('data', (chunk) => {
+        bodyLength += chunk.length;
+        if (bodyLength > MAX_PAYLOAD_BYTES) {
+          bodyTooLarge = true;
+          return;
+        }
         bodyStr += chunk;
       });
+
       req.on('end', async () => {
+        if (bodyTooLarge) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload Too Large' }));
+          return;
+        }
+
         try {
           const body = JSON.parse(bodyStr || '{}');
           const versionNumber = Number(body.versionNumber);

@@ -44,6 +44,7 @@ export function DocumentEditor({
   const [collabTitleSaveState, setCollabTitleSaveState] = useState<SaveState>('saved');
 
   const lastDocIdRef = useRef<string>(document.id);
+  const lastSnapshotVersionRef = useRef<number | null | undefined>(document.snapshot_version);
   const titleDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const inFlightTitlePromiseRef = useRef<Promise<void> | null>(null);
   const pendingTitleToSaveRef = useRef<string | null>(null);
@@ -300,9 +301,11 @@ export function DocumentEditor({
   // 3. Document prop synchronization
   useEffect(() => {
     const isDocumentSwitch = document.id !== lastDocIdRef.current;
+    const isVersionRestored = document.snapshot_version !== lastSnapshotVersionRef.current;
 
-    if (isDocumentSwitch) {
+    if (isDocumentSwitch || isVersionRestored) {
       lastDocIdRef.current = document.id;
+      lastSnapshotVersionRef.current = document.snapshot_version;
       if (titleDebounceTimerRef.current) {
         clearTimeout(titleDebounceTimerRef.current);
         titleDebounceTimerRef.current = null;
@@ -310,8 +313,10 @@ export function DocumentEditor({
       pendingTitleToSaveRef.current = null;
       inFlightTitlePromiseRef.current = null;
       setCollabTitleSaveState('saved');
-      resetEditState();
-      setIsFocusMode(false);
+      if (isDocumentSwitch) {
+        resetEditState();
+        setIsFocusMode(false);
+      }
       setTitle(document.title || 'Untitled Document');
 
       if (!isCollaborative && editor) {
@@ -333,6 +338,7 @@ export function DocumentEditor({
     }
   }, [
     document.id,
+    document.snapshot_version,
     document.title,
     document.content_text,
     editor,

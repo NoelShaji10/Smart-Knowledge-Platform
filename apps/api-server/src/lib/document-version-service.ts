@@ -21,6 +21,29 @@ export async function createVersionCheckpoint(
   userId: string,
   trigger: VersionTrigger = 'manual',
 ) {
+  // If collab server is available and has an active room with unpersisted edits,
+  // request an immediate persistence flush so the checkpoint captures live collaborative edits!
+  try {
+    const env = getEnv();
+    const collabPort = env.COLLAB_PORT || '3001';
+    const flushController = new AbortController();
+    const flushTimeout = setTimeout(() => flushController.abort(), 2000);
+    try {
+      await fetch(`http://127.0.0.1:${collabPort}/internal/documents/${documentId}/flush`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-key': env.INTERNAL_SERVICE_KEY,
+        },
+        signal: flushController.signal,
+      });
+    } finally {
+      clearTimeout(flushTimeout);
+    }
+  } catch {
+    // Safe fallback if collab server is offline or unit tests run without it
+  }
+
   return scopedDb.execute(async (db) => {
     // 1. Validate document exists in workspace
     const doc = await db

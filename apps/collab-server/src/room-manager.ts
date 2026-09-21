@@ -190,9 +190,36 @@ export function queueRoomPersistence(room: Room): Promise<void> {
 
   const promise = (async () => {
     try {
-      await persistRecoverySnapshot(room.documentId, room.doc, room.fencingToken);
-      room.lastPersistedSeq = Math.max(room.lastPersistedSeq, seqToPersist);
-      broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
+      await withDocumentLock(room.documentId, async (lockContext) => {
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
+
+        // 1. Update room fencing token if lock provided a valid fencing token
+        if (lockContext?.fencingToken && lockContext.fencingToken > 0) {
+          room.fencingToken = lockContext.fencingToken;
+        }
+
+        // 2. Pre-mutation checks under lock:
+        if (room.isClosing) {
+          return;
+        }
+
+        // Check if already persisted up to or past seqToPersist
+        // (e.g. manual checkpoint or restore ran while we were waiting for the lock!)
+        if (room.lastPersistedSeq >= seqToPersist) {
+          broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, room.lastPersistedSeq);
+          return;
+        }
+
+        // 3. Persist recovery snapshot passing our acquired lockContext
+        await persistRecoverySnapshot(room.documentId, room.doc, lockContext);
+
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
+
+        room.lastPersistedSeq = Math.max(room.lastPersistedSeq, seqToPersist);
+        broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, seqToPersist);
+      });
     } catch (err: any) {
       console.error(`[collab-server] Snapshot error for ${room.documentId}:`, err);
       const errorMsg = err instanceof Error ? err.message : 'Snapshot error';
@@ -413,7 +440,7 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
 
     try {
       // 1. Persist final recovery snapshot
-      await persistRecoverySnapshot(documentId, room.doc, lockContext?.fencingToken);
+      await persistRecoverySnapshot(documentId, room.doc, lockContext);
       lockContext?.assertLockValid();
       // 2. Persist session-end version checkpoint
       await createVersionCheckpointOnSessionEnd(
@@ -424,6 +451,19 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
       );
     } catch (err) {
       console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
+      if (room.connections.size === 0) {
+        if (room.unbindDocListener) {
+          room.unbindDocListener();
+          room.unbindDocListener = undefined;
+        }
+        try {
+          room.doc.destroy();
+        } catch {}
+        rooms.delete(documentId);
+      } else {
+        room.isClosing = false;
+      }
+      throw err;
     }
 
     lockContext?.assertLockValid();
@@ -431,8 +471,11 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
     if (room.connections.size === 0) {
       if (room.unbindDocListener) {
         room.unbindDocListener();
+        room.unbindDocListener = undefined;
       }
-      room.doc.destroy();
+      try {
+        room.doc.destroy();
+      } catch {}
       rooms.delete(documentId);
     } else {
       room.isClosing = false;

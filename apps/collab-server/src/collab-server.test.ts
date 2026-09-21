@@ -376,6 +376,9 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
 
       // Fast-forward debounce timer
       await vi.advanceTimersByTimeAsync(2000);
+      if (room.inFlightPersistence) {
+        await room.inFlightPersistence;
+      }
 
       // Verify WebSocket received persistence messages
       const persistenceMessages = mockWs.sentData
@@ -501,6 +504,11 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
 
       // Fast-forward debounce
       await vi.advanceTimersByTimeAsync(2000);
+      if (room.inFlightPersistence) {
+        try {
+          await room.inFlightPersistence;
+        } catch {}
+      }
 
       const errorMessages = mockWs.sentData
         .map((buf) => {
@@ -554,6 +562,9 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
 
       // Wait a tick for async flush
       await vi.advanceTimersByTimeAsync(10);
+      if (room.inFlightPersistence) {
+        await room.inFlightPersistence;
+      }
 
       const packets = mockWs.sentData
         .map((buf) => {
@@ -610,6 +621,11 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
       room.doc.getText('content').insert(0, 'Edit 1');
       const flush1Promise = flushRoomPersistence(room);
 
+      // Wait a tick for withDocumentLock acquisition
+      while (snapCallCount === 0) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
       // Verify snap 1 started
       expect(snapCallCount).toBe(1);
       expect(room.inFlightPersistence).not.toBeNull();
@@ -627,7 +643,9 @@ describe('T1, T2 & T5: Collab Server Yjs Sync, Room Manager & Viewer Write Enfor
       await flush1Promise;
 
       // Now snap 1 finished, server automatically starts queued snap 2!
-      await new Promise((r) => setTimeout(r, 10));
+      while (snapCallCount < 2) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
       expect(snapCallCount).toBe(2);
 
       // 4. Resolve snap 2

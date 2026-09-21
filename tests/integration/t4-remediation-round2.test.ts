@@ -8,6 +8,7 @@ import {
   Room,
   queueRoomPersistence,
   evictRoom,
+  removeRoomIfEmpty,
   Y,
 } from '../../apps/collab-server/src/room-manager';
 import { createVersionCheckpointOnSessionEnd } from '../../apps/collab-server/src/snapshot-service';
@@ -577,5 +578,73 @@ describe('Phase 5 T4 Remediation Round 3: Adversarial Concurrency & Fencing Test
 
     expect(evicted).toBe(true);
     expect(getRoom(docId)).toBeUndefined();
+  });
+
+  // =========================================================================
+  // TEST 14 — Background persistence vs manual checkpoint (Blocker 1 & 3)
+  // =========================================================================
+  it('TEST 14: Background persistence vs manual checkpoint: serialized by document lock, older persistence cannot overwrite newer checkpoint', async () => {
+    const room = await getOrCreateRoom(docId);
+
+    // 1. Older edit in active room: docSeq = 1
+    room.doc.getText('default').insert(0, 'State A: Older edit. ');
+    expect(room.docSeq).toBe(1);
+
+    // 2. Prepare background persistence for seq 1
+    const pBgPersistence = queueRoomPersistence(room);
+
+    // 3. Right after, a newer edit arrives: docSeq = 2
+    room.doc.getText('default').insert(room.doc.getText('default').length, 'State B: Checkpoint edit.');
+    expect(room.docSeq).toBe(2);
+
+    // 4. Concurrently execute manual checkpoint
+    const pCheckpoint = createDocumentCheckpoint(docId, workspaceId, userId, 'manual');
+
+    // 5. Await both operations
+    const [, checkpointRes] = await Promise.all([pBgPersistence, pCheckpoint]);
+
+    // 6. Assertions:
+    expect(checkpointRes).toBeDefined();
+    expect(checkpointRes.version_number).toBe(2);
+    expect(checkpointRes.snapshot_key).toBe(`versions/${docId}/2.yjs`);
+    expect(checkpointRes.content_text).toContain('State B: Checkpoint edit.');
+
+    // 7. Authoritative DB snapshot_version and snapshot_key reflect the newer checkpoint
+    expect(dbDocRow.snapshot_version).toBe(2);
+    expect(dbDocRow.snapshot_key).toBe(`snapshots/${docId}/latest.yjs`);
+
+    // 8. Storage recovery snapshot must contain State B (cannot be reverted to State A by delayed background persistence)
+    const latestRecoveryBytes = storageSnapshots.get(docId);
+    expect(latestRecoveryBytes).toBeDefined();
+    const recoveryDoc = new Y.Doc();
+    Y.applyUpdate(recoveryDoc, latestRecoveryBytes!);
+    const recoveryText = recoveryDoc.getText('default').toString();
+    expect(recoveryText).toContain('State A: Older edit.');
+    expect(recoveryText).toContain('State B: Checkpoint edit.');
+  });
+
+  // =========================================================================
+  // TEST 15 — Session-end checkpoint failure (Blocker 2 & 4)
+  // =========================================================================
+  it('TEST 15: Session-end failure: removeRoomIfEmpty propagates error when checkpoint fails', async () => {
+    const room = await getOrCreateRoom(docId);
+    room.doc.getText('default').insert(0, 'Unsaved session text');
+
+    // Mock storage to fail on version snapshot during session end
+    vi.spyOn(storage, 'saveVersionSnapshot').mockRejectedValueOnce(
+      new Error('MinIO storage connection timeout during session end')
+    );
+
+    // removeRoomIfEmpty MUST NOT silently swallow the error; it must reject!
+    await expect(removeRoomIfEmpty(docId, userId)).rejects.toThrow(
+      'MinIO storage connection timeout during session end'
+    );
+
+    // Safe cleanup invariant: in-memory room is cleaned up
+    expect(getRoom(docId)).toBeUndefined();
+
+    // Invariant: No fake version was committed
+    expect(dbDocRow.snapshot_version).toBe(1);
+    expect(dbVersions.length).toBe(1);
   });
 });

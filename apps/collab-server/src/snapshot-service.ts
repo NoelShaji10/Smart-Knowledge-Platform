@@ -200,15 +200,52 @@ export async function loadRoomSnapshot(documentId: string, doc: Y.Doc): Promise<
   }
 }
 
+const isLockContext = (val: any): val is LockContext =>
+  val !== undefined && val !== null && typeof val === 'object' && typeof val.assertLockValid === 'function';
+
 export async function persistRecoverySnapshot(
   documentId: string,
   doc: Y.Doc,
-  fencingToken?: number
+  fencingTokenOrLockContext?: number | LockContext,
+  lockContextParam?: LockContext
 ): Promise<void> {
+  const lockContext = isLockContext(fencingTokenOrLockContext)
+    ? fencingTokenOrLockContext
+    : isLockContext(lockContextParam)
+    ? lockContextParam
+    : undefined;
+
+  const rawToken = typeof fencingTokenOrLockContext === 'number'
+    ? fencingTokenOrLockContext
+    : lockContext?.fencingToken;
+
+  if (lockContext) {
+    return await executeRecoverySnapshotPersistence(documentId, doc, lockContext.fencingToken ?? rawToken, lockContext);
+  } else {
+    // Standalone caller without existing lock: acquire document lock
+    return await withDistributedLock(`document:${documentId}`, async (acquiredCtx) => {
+      const effectiveToken = rawToken !== undefined ? rawToken : acquiredCtx?.fencingToken;
+      return await executeRecoverySnapshotPersistence(documentId, doc, effectiveToken, acquiredCtx);
+    });
+  }
+}
+
+async function executeRecoverySnapshotPersistence(
+  documentId: string,
+  doc: Y.Doc,
+  fencingToken?: number,
+  lockContext?: LockContext
+): Promise<void> {
+  lockContext?.assertLockValid();
+  await lockContext?.verifyOwnership();
+
   const snapshotBytes = Y.encodeStateAsUpdate(doc);
   const contentText = extractSearchableText(doc);
 
   const updatedDoc = await withSystemContext(async (systemDb) => {
+    lockContext?.assertLockValid();
+    await lockContext?.verifyOwnership();
+
     // 1. Validate DB fencing token under row lock FIRST!
     if (fencingToken !== undefined && fencingToken > 0) {
       const docRow = await systemDb
@@ -224,8 +261,13 @@ export async function persistRecoverySnapshot(
       }
     }
 
+    lockContext?.assertLockValid();
+
     // 2. Save recovery snapshot to MinIO ONLY AFTER PostgreSQL row lock validates fencing token!
     const key = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
+
+    lockContext?.assertLockValid();
+    await lockContext?.verifyOwnership();
 
     const updatedDoc = await systemDb
       .updateTable('documents')

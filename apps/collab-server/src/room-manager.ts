@@ -200,7 +200,11 @@ export function queueRoomPersistence(room: Room): Promise<void> {
         }
 
         // 2. Pre-mutation checks under lock:
-        if (room.isClosing) {
+        if (room.isClosing || rooms.get(room.documentId) !== room) {
+          return;
+        }
+
+        if (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen) {
           return;
         }
 
@@ -289,6 +293,8 @@ export async function syncDocumentFencingToken(
 
   try {
     await withSystemContext(async (systemDb) => {
+      if (!systemDb || typeof systemDb.updateTable !== 'function') return;
+
       let query: any = systemDb
         .updateTable('documents')
         .set({
@@ -316,7 +322,10 @@ export async function syncDocumentFencingToken(
       }
     });
   } catch (err: any) {
-    // Safe handling if DB is mocked in unit tests or document does not exist yet
+    if (err && typeof err === 'object' && err.message && !err.message.includes('updateTable is not a function')) {
+      console.error(`[collab-server] Failed to sync fencing token for document ${documentId}:`, err);
+      throw err;
+    }
   }
 }
 
@@ -416,6 +425,16 @@ export function removeConnectionFromRoom(room: Room, conn: ClientConnection): vo
 }
 
 export async function removeRoomIfEmpty(documentId: string, lastUserId?: string): Promise<void> {
+  // Await any in-flight persistence before acquiring document lock to prevent distributed deadlocks
+  const preRoom = rooms.get(documentId);
+  if (preRoom?.inFlightPersistence) {
+    try {
+      await preRoom.inFlightPersistence;
+    } catch {
+      // Ignored during shutdown
+    }
+  }
+
   return await withDocumentLock(documentId, async (lockContext) => {
     const room = rooms.get(documentId);
     if (!room || room.connections.size > 0 || room.isClosing) return;
@@ -426,14 +445,6 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
     if (room.debounceTimer) {
       clearTimeout(room.debounceTimer);
       room.debounceTimer = null;
-    }
-
-    if (room.inFlightPersistence) {
-      try {
-        await room.inFlightPersistence;
-      } catch {
-        // Ignored during shutdown
-      }
     }
 
     lockContext?.assertLockValid();
@@ -686,6 +697,16 @@ export async function restoreDocument(
   userId: string,
   options?: RestoreDocumentOptions
 ): Promise<{ document: any; newVersion: any }> {
+  // Await any in-flight persistence before acquiring document lock to prevent distributed deadlocks
+  const preRoom = rooms.get(documentId);
+  if (preRoom?.inFlightPersistence) {
+    try {
+      await preRoom.inFlightPersistence;
+    } catch {
+      // Pre-restore in-flight persistence errors are safely ignored
+    }
+  }
+
   return await withDocumentLock(documentId, async (lockContext) => {
     lockContext?.assertLockValid();
     const fencingToken = lockContext?.fencingToken ?? 0;
@@ -763,15 +784,6 @@ export async function restoreDocument(
         room.debounceTimer = null;
       }
       room.queuedPersistenceSeq = null;
-
-      // 2. Drain any in-flight persistence operation before starting the restore
-      if (room.inFlightPersistence) {
-        try {
-          await room.inFlightPersistence;
-        } catch {
-          // In-flight persistence errors are safely caught; pre-restore work is superseded
-        }
-      }
 
       try {
         lockContext?.assertLockValid();
@@ -1154,6 +1166,16 @@ export async function createDocumentCheckpoint(
   trigger: VersionTrigger = 'manual',
   options?: LockOptions
 ) {
+  // Await any in-flight persistence before acquiring document lock to prevent distributed deadlocks
+  const preRoom = rooms.get(documentId);
+  if (preRoom?.inFlightPersistence) {
+    try {
+      await preRoom.inFlightPersistence;
+    } catch {
+      // Ignored; checkpoint will capture authoritative state
+    }
+  }
+
   return await withDocumentLock(
     documentId,
     async (lockContext) => {
@@ -1261,7 +1283,7 @@ export async function createDocumentCheckpoint(
             .returningAll()
             .executeTakeFirstOrThrow();
 
-          await trx
+          const updatedDoc = await trx
             .updateTable('documents')
             .set({
               snapshot_version: nextVersion,
@@ -1281,7 +1303,14 @@ export async function createDocumentCheckpoint(
               }
               return eb.val(true);
             })
-            .execute();
+            .returning(['id'])
+            .executeTakeFirst();
+
+          if (!updatedDoc) {
+            throw new StaleFencingTokenError(
+              `Stale checkpoint commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
+            );
+          }
 
           await trx
             .insertInto('audit_events')

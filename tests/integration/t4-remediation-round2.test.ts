@@ -233,7 +233,18 @@ describe('Phase 5 T4 Remediation Round 3: Adversarial Concurrency & Fencing Test
                 }
                 return updateBuilder;
               },
-              returning: (_cols: any) => updateBuilder,
+              returning: (_cols: any) => ({
+                executeTakeFirst: async () => {
+                  if (!whereMatches) return null;
+                  Object.assign(dbDocRow, sets);
+                  return dbDocRow;
+                },
+                executeTakeFirstOrThrow: async () => {
+                  if (!whereMatches) throw new StaleFencingTokenError('Stale fencing token');
+                  Object.assign(dbDocRow, sets);
+                  return dbDocRow;
+                },
+              }),
               returningAll: () => ({
                 executeTakeFirst: async () => {
                   if (!whereMatches) return null;
@@ -647,4 +658,70 @@ describe('Phase 5 T4 Remediation Round 3: Adversarial Concurrency & Fencing Test
     expect(dbDocRow.snapshot_version).toBe(1);
     expect(dbVersions.length).toBe(1);
   });
+
+  // =========================================================================
+  // TEST 16 — Concurrent restoreDocument and in-flight background persistence
+  // =========================================================================
+  it('TEST 16: Concurrent restoreDocument and in-flight background persistence serialize without deadlock', async () => {
+    const room = await getOrCreateRoom(docId);
+    room.doc.getText('default').insert(0, 'Edit to be overwritten by restore');
+
+    // 1. Queue background persistence
+    const pPersistence = queueRoomPersistence(room);
+
+    // 2. Concurrently call restoreDocument
+    const pRestore = restoreDocument(docId, 1, userId);
+
+    // 3. Await both - must NOT deadlock and must both resolve cleanly
+    const [, restoreRes] = await Promise.all([pPersistence, pRestore]);
+
+    expect(restoreRes).toBeDefined();
+    expect(restoreRes.newVersion.version_number).toBe(2);
+
+    // Active room has historical text
+    expect(room.doc.getText('default').toString()).toBe('Initial Text');
+
+    // Recovery snapshot in storage reflects historical text (never regresses to old pre-restore edit)
+    const latestBytes = storageSnapshots.get(docId);
+    expect(latestBytes).toBeDefined();
+    const docAfter = new Y.Doc();
+    Y.applyUpdate(docAfter, latestBytes!);
+    expect(docAfter.getText('default').toString()).toBe('Initial Text');
+  });
+
+  // =========================================================================
+  // TEST 17 — Fencing supersession in createDocumentCheckpoint
+  // =========================================================================
+  it('TEST 17: Fencing supersession in createDocumentCheckpoint fails closed with StaleFencingTokenError', async () => {
+    await getOrCreateRoom(docId);
+
+    // Advance DB fencing token to simulate another instance having taken over
+    dbDocRow.fencing_token = 999;
+
+    // createDocumentCheckpoint with older token must fail closed
+    await expect(
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual')
+    ).rejects.toThrow(StaleFencingTokenError);
+
+    // Invariant: No version row committed
+    expect(dbVersions.length).toBe(1);
+    expect(dbDocRow.snapshot_version).toBe(1);
+  });
+
+  // =========================================================================
+  // TEST 18 — Recovery pointer DB failure propagation
+  // =========================================================================
+  it('TEST 18: Recovery pointer DB failure: real database error propagates and fails closed', async () => {
+    const room = await getOrCreateRoom(docId);
+    room.doc.getText('default').insert(0, 'Some text');
+
+    // Force DB error during recovery pointer update
+    throwOnRecoveryPointerUpdate = true;
+
+    // queueRoomPersistence must reject with the DB error
+    await expect(queueRoomPersistence(room)).rejects.toThrow(
+      'PostgreSQL connection dropped during recovery pointer update'
+    );
+  });
 });
+

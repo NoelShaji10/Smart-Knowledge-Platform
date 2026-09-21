@@ -16,6 +16,7 @@ import {
   getRoom,
   restoreDocument,
   restoreActiveRoom,
+  createDocumentCheckpoint,
   addConnectionToRoom,
   removeConnectionFromRoom,
   removeRoomIfEmpty,
@@ -304,6 +305,67 @@ export function createCollabServer() {
           const status = err.message === 'Version not found' ? 404 : 500;
           res.writeHead(status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message || 'Restore error' }));
+        }
+      });
+      return;
+    }
+
+    const checkpointMatch = req.method === 'POST' && req.url?.match(/^\/internal\/documents\/([^/]+)\/checkpoint$/);
+    if (checkpointMatch) {
+      const documentId = checkpointMatch[1];
+
+      // 1. Authenticate service-to-service key
+      const expectedKey = getEnv().INTERNAL_SERVICE_KEY;
+      const providedKey = req.headers['x-internal-key'];
+      if (!providedKey || providedKey !== expectedKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized internal service request' }));
+        return;
+      }
+
+      let bodyStr = '';
+      let bodyLength = 0;
+      const MAX_PAYLOAD_BYTES = 64 * 1024; // 64 KB limit
+      let bodyTooLarge = false;
+
+      req.on('data', (chunk) => {
+        bodyLength += chunk.length;
+        if (bodyLength > MAX_PAYLOAD_BYTES) {
+          bodyTooLarge = true;
+          return;
+        }
+        bodyStr += chunk;
+      });
+
+      req.on('end', async () => {
+        if (bodyTooLarge) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload Too Large' }));
+          return;
+        }
+
+        try {
+          const body = JSON.parse(bodyStr || '{}');
+          const workspaceId = String(body.workspaceId || '');
+          const userId = String(body.userId || '');
+          const trigger = body.trigger || 'manual';
+
+          if (!workspaceId || !userId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing workspaceId or userId' }));
+            return;
+          }
+
+          const versionRow = await createDocumentCheckpoint(documentId, workspaceId, userId, trigger);
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ version: versionRow }));
+        } catch (err: any) {
+          console.error(`[collab-server] Error checkpointing document ${documentId}:`, err);
+          const isNotFound = err.message === 'Document not found';
+          const isArchived = err.message === 'Cannot create version checkpoint for an archived document';
+          const status = isNotFound ? 404 : isArchived ? 400 : 500;
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message || 'Checkpoint error' }));
         }
       });
       return;

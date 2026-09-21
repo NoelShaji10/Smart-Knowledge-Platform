@@ -1,12 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { clearAllRooms, getOrCreateRoom, getRoom, restoreDocument, Room, queueRoomPersistence, evictRoom, Y } from '../../apps/collab-server/src/room-manager';
+import {
+  clearAllRooms,
+  getOrCreateRoom,
+  getRoom,
+  restoreDocument,
+  createDocumentCheckpoint,
+  Room,
+  queueRoomPersistence,
+  evictRoom,
+  Y,
+} from '../../apps/collab-server/src/room-manager';
+import { createVersionCheckpointOnSessionEnd } from '../../apps/collab-server/src/snapshot-service';
 import * as storage from '@knowledge/storage';
 import * as database from '@knowledge/database';
 import { getRedisClient, withDistributedLock, LockLostError, StaleFencingTokenError } from '@knowledge/redis';
 import { createVersionCheckpoint } from '../../apps/api-server/src/lib/document-version-service';
 import { getEnv } from '@knowledge/config';
 
-describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Tests', () => {
+describe('Phase 5 T4 Remediation Round 3: Adversarial Concurrency & Fencing Tests', () => {
   const docId = '11111111-1111-1111-1111-111111111111';
   const workspaceId = '22222222-2222-2222-2222-222222222222';
   const userId = '33333333-3333-3333-3333-333333333333';
@@ -17,11 +28,17 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
   // In-memory mock DB document table state
   let dbDocRow: any;
   let dbVersions: any[];
+  let throwOnRecoveryPointerUpdate = false;
+  let forceDivergenceInTest = false;
+  let divergenceDbVersionReads = 0;
 
   beforeEach(() => {
     clearAllRooms();
     storageSnapshots.clear();
     storageVersions.clear();
+    throwOnRecoveryPointerUpdate = false;
+    forceDivergenceInTest = false;
+    divergenceDbVersionReads = 0;
 
     dbDocRow = {
       id: docId,
@@ -85,12 +102,11 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
   afterEach(() => {
     clearAllRooms();
     vi.restoreAllMocks();
-    forceDivergenceInTest2 = false;
-    test2DbVersionReads = 0;
+    vi.unstubAllGlobals();
+    throwOnRecoveryPointerUpdate = false;
+    forceDivergenceInTest = false;
+    divergenceDbVersionReads = 0;
   });
-
-  let forceDivergenceInTest2 = false;
-  let test2DbVersionReads = 0;
 
   /**
    * Helper to set up a mock system DB reflecting the in-memory dbDocRow & dbVersions
@@ -105,11 +121,19 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
           select: (_cols: any) => builder,
           selectAll: () => builder,
           forUpdate: () => builder,
+          orderBy: () => builder,
+          leftJoin: () => builder,
           executeTakeFirst: async () => {
             if (table === 'users') {
               return { id: userId };
             }
             if (table === 'documents') {
+              if (whereFilters.some((f) => f.arg1 === 'id' && f.val !== dbDocRow.id)) {
+                return null;
+              }
+              if (whereFilters.some((f) => f.arg1 === 'workspace_id' && f.val !== dbDocRow.workspace_id)) {
+                return null;
+              }
               return dbDocRow;
             }
             if (table === 'workspace_members') {
@@ -123,11 +147,11 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
                 const verNum = whereFilters.find((f) => f.arg1 === 'version_number')?.val;
                 return dbVersions.find((v) => v.version_number === verNum) || null;
               }
-              if (forceDivergenceInTest2) {
-                if (test2DbVersionReads > 0) {
+              if (forceDivergenceInTest) {
+                if (divergenceDbVersionReads > 0) {
                   return { max_ver: 2 }; // Diverged!
                 }
-                test2DbVersionReads++;
+                divergenceDbVersionReads++;
                 return { max_ver: 1 };
               }
               const maxVer = dbVersions.reduce((m, v) => Math.max(m, v.version_number), 0);
@@ -140,7 +164,12 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
             if (!res) throw new Error(`Not found in ${table}`);
             return res;
           },
-          execute: async () => [],
+          execute: async () => {
+            if (table === 'document_versions') {
+              return [...dbVersions];
+            }
+            return [];
+          },
         };
         return builder;
       };
@@ -165,14 +194,25 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
         }),
         updateTable: (table: string) => ({
           set: (sets: any) => {
+            if (
+              table === 'documents' &&
+              throwOnRecoveryPointerUpdate &&
+              sets.snapshot_key &&
+              !sets.snapshot_version
+            ) {
+              throw new Error('PostgreSQL connection dropped during recovery pointer update');
+            }
+
             let whereMatches = true;
             const updateBuilder: any = {
               where: (predicate: any, op?: string, val?: any) => {
                 if (typeof predicate === 'function') {
-                  // Simulate kysely expression builder
                   const eb: any = (col: string, condOp: string, condVal: any) => {
                     if (condOp === '<=') {
                       return dbDocRow[col] <= condVal;
+                    }
+                    if (condOp === '<') {
+                      return dbDocRow[col] < condVal;
                     }
                     if (condOp === 'is') {
                       return dbDocRow[col] === null || dbDocRow[col] === undefined;
@@ -192,6 +232,7 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
                 }
                 return updateBuilder;
               },
+              returning: (_cols: any) => updateBuilder,
               returningAll: () => ({
                 executeTakeFirst: async () => {
                   if (!whereMatches) return null;
@@ -229,15 +270,12 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
   // TEST 1 — Stale recovery pointer (Blocker 1)
   // =========================================================================
   it('TEST 1: Stale recovery pointer: Token 10 restore delayed write cannot overwrite Token 11 authoritative metadata', async () => {
-    setupMockSystemDb();
-
     // 1. Simulate Token 11 has committed newer state in PostgreSQL
     dbDocRow.fencing_token = 11;
     dbDocRow.snapshot_version = 5;
     dbDocRow.snapshot_key = `versions/${docId}/5.yjs`;
 
     // 2. Instance A executing with stale Token 10 attempts Step C recovery pointer update:
-    // UPDATE documents SET snapshot_key = recoveryKey WHERE id = docId AND fencing_token <= 10 AND snapshot_version <= 2
     let updatedRows = 0;
     await database.withSystemContext(async (systemDb) => {
       const res = await systemDb
@@ -264,59 +302,112 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
   });
 
   // =========================================================================
-  // TEST 2 — Version/key divergence (Blocker 2)
+  // TEST 2 — Recovery pointer database failure (Blocker 1)
   // =========================================================================
-  it('TEST 2: Version/key divergence: fails closed if version allocation diverges before commit', async () => {
-    // Force version divergence: Step A sees max_ver = 1 (allocatedVersion = 2).
-    // But right before Step B commits, another concurrent checkpoint commits Version 2, advancing max_ver to 2.
-    forceDivergenceInTest2 = true;
-    test2DbVersionReads = 0;
+  it('TEST 2: Recovery pointer database failure: restore fails closed when recovery pointer DB update throws', async () => {
+    throwOnRecoveryPointerUpdate = true;
 
-    // Restore must abort and fail closed with Version divergence detected
+    // restoreDocument must NOT swallow the DB error into a warning; it must reject
     await expect(restoreDocument(docId, 1, userId)).rejects.toThrow(
-      /Version divergence detected for document/
+      'PostgreSQL connection dropped during recovery pointer update'
     );
+  });
 
-    // Verify no mismatched document_versions row was added
+  // =========================================================================
+  // TEST 3 — Concurrent version allocation (Blocker 2 & 3)
+  // =========================================================================
+  it('TEST 3: Concurrent version allocation: two concurrent checkpoints serialize under document lock without collision', async () => {
+    const [vA, vB] = await Promise.all([
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual'),
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual'),
+    ]);
+
+    expect(vA).toBeDefined();
+    expect(vB).toBeDefined();
+
+    const versions = [vA.version_number, vB.version_number].sort((a, b) => a - b);
+    expect(versions).toEqual([2, 3]);
+
+    const v2 = vA.version_number === 2 ? vA : vB;
+    const v3 = vA.version_number === 3 ? vA : vB;
+
+    expect(v2.snapshot_key).toBe(`versions/${docId}/2.yjs`);
+    expect(v3.snapshot_key).toBe(`versions/${docId}/3.yjs`);
+    expect(dbDocRow.snapshot_version).toBe(3);
+  });
+
+  // =========================================================================
+  // TEST 4 — Restore vs manual checkpoint (Blocker 2 & 3)
+  // =========================================================================
+  it('TEST 4: Restore vs manual checkpoint: concurrent restore and manual checkpoint serialize under same document lock', async () => {
+    const [restoreRes, checkpointRes] = await Promise.all([
+      restoreDocument(docId, 1, userId),
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual'),
+    ]);
+
+    expect(restoreRes.newVersion).toBeDefined();
+    expect(checkpointRes).toBeDefined();
+
+    const restoreVer = restoreRes.newVersion.version_number;
+    const checkpointVer = checkpointRes.version_number;
+
+    expect(restoreVer).not.toBe(checkpointVer);
+    const sorted = [restoreVer, checkpointVer].sort((a, b) => a - b);
+    expect(sorted).toEqual([2, 3]);
+
+    expect(restoreRes.newVersion.snapshot_key).toBe(`versions/${docId}/${restoreVer}.yjs`);
+    expect(checkpointRes.snapshot_key).toBe(`versions/${docId}/${checkpointVer}.yjs`);
+  });
+
+  // =========================================================================
+  // TEST 5 — Session-end checkpoint vs restore
+  // =========================================================================
+  it('TEST 5: Session-end checkpoint vs restore: concurrent session-end checkpoint and restore serialize cleanly', async () => {
+    const sessionDoc = new Y.Doc();
+    sessionDoc.getText('default').insert(0, 'Session end content');
+
+    const [sessionEndRes, restoreRes] = await Promise.allSettled([
+      createVersionCheckpointOnSessionEnd(docId, sessionDoc, userId),
+      restoreDocument(docId, 1, userId),
+    ]);
+
+    expect(sessionEndRes.status).toBe('fulfilled');
+    expect(restoreRes.status).toBe('fulfilled');
+
+    // Verify all committed versions have matching snapshot keys and no duplicates
+    const vNums = dbVersions.map((v) => v.version_number);
+    const uniqueVNums = new Set(vNums);
+    expect(uniqueVNums.size).toBe(vNums.length);
+
     for (const v of dbVersions) {
-      const match = v.snapshot_key.match(/\/(\d+)\.yjs$/);
-      if (match) {
-        expect(Number(match[1])).toBe(v.version_number);
-      }
+      expect(v.snapshot_key).toBe(`versions/${docId}/${v.version_number}.yjs`);
     }
   });
 
   // =========================================================================
-  // TEST 3 — Flush HTTP 500 (Blocker 3)
+  // TEST 6 — Active-room checkpoint failure (Option A fail-closed)
   // =========================================================================
-  it('TEST 3: Flush HTTP 500: createVersionCheckpoint fails closed when collab server returns 500', async () => {
-    // Mock global.fetch to return 500
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: 'Internal Server Error',
-      json: async () => ({ error: 'Collab server snapshot failure' }),
-    }));
+  it('TEST 6: Active-room checkpoint failure: storage failure fails closed without committing version or advancing snapshot_version', async () => {
+    const prevVersion = dbDocRow.snapshot_version;
+    const prevVersionsCount = dbVersions.length;
 
-    const mockScopedDb: any = {
-      execute: vi.fn(),
-    };
+    vi.spyOn(storage, 'saveVersionSnapshot').mockRejectedValueOnce(
+      new Error('MinIO S3 connection refused')
+    );
 
     await expect(
-      createVersionCheckpoint(mockScopedDb, workspaceId, docId, userId, 'manual')
-    ).rejects.toThrow(/Collab server flush failed with status 500/);
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual')
+    ).rejects.toThrow('MinIO S3 connection refused');
 
-    // Ensure database transaction was NEVER entered
-    expect(mockScopedDb.execute).not.toHaveBeenCalled();
-
-    vi.unstubAllGlobals();
+    // Invariant: No document_versions row committed, snapshot_version not advanced
+    expect(dbDocRow.snapshot_version).toBe(prevVersion);
+    expect(dbVersions.length).toBe(prevVersionsCount);
   });
 
   // =========================================================================
-  // TEST 4 — Flush timeout (Blocker 3)
+  // TEST 7 — Active-room checkpoint timeout (Option A fail-closed)
   // =========================================================================
-  it('TEST 4: Flush timeout: createVersionCheckpoint fails closed when collab server flush times out', async () => {
-    // Mock global.fetch to simulate AbortError (timeout)
+  it('TEST 7: Active-room checkpoint timeout: collab server timeout causes API server checkpoint to fail closed', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
       const err = new Error('The operation was aborted');
       err.name = 'AbortError';
@@ -324,188 +415,141 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
     }));
 
     const mockScopedDb: any = {
-      execute: vi.fn(),
+      execute: async (fn: any) => await database.withSystemContext(fn),
     };
 
     await expect(
       createVersionCheckpoint(mockScopedDb, workspaceId, docId, userId, 'manual')
-    ).rejects.toThrow(/Collab server timed out during persistence flush/);
-
-    // Ensure database transaction was NEVER entered
-    expect(mockScopedDb.execute).not.toHaveBeenCalled();
+    ).rejects.toThrow(/Collab server timed out during version checkpoint/);
 
     vi.unstubAllGlobals();
   });
 
   // =========================================================================
-  // TEST 5 — Flush success with active room (Blocker 3)
+  // TEST 8 — Active-room checkpoint succeeds (Option A)
   // =========================================================================
-  it('TEST 5: Flush success: createVersionCheckpoint proceeds when flush returns 200 { active: true }', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ active: true, persistedSeq: 5 }),
-    }));
+  it('TEST 8: Active-room checkpoint succeeds: live state captured, persisted, and checkpointed', async () => {
+    const room = await getOrCreateRoom(docId);
+    room.doc.getText('default').insert(0, 'Live room active text');
 
-    let checkpointCommitted = false;
-    const createUpdateBuilder = () => {
-      const ub: any = {
-        set: () => ub,
-        where: () => ub,
-        execute: async () => {},
-        executeTakeFirst: async () => ({ numUpdatedRows: 1n }),
-      };
-      return ub;
-    };
+    const res = await createDocumentCheckpoint(docId, workspaceId, userId, 'manual');
 
-    const mockDb: any = {
-      selectFrom: (table: string) => ({
-        where: () => ({
-          where: () => ({
-            select: () => ({
-              forUpdate: () => ({
-                executeTakeFirst: async () => ({
-                  id: docId,
-                  title: 'Live Title',
-                  content_text: 'Live Text',
-                  is_archived: 0,
-                  snapshot_key: `versions/${docId}/1.yjs`,
-                  fencing_token: 0,
-                }),
-              }),
-            }),
-          }),
-          select: () => ({
-            executeTakeFirst: async () => ({ max_ver: 1 }),
-          }),
-        }),
-      }),
-      updateTable: () => createUpdateBuilder(),
-      insertInto: () => ({
-        values: (vals: any) => ({
-          returningAll: () => ({
-            executeTakeFirstOrThrow: async () => {
-              checkpointCommitted = true;
-              return { id: 'ver-2', ...vals };
-            },
-          }),
-        }),
-      }),
-    };
-
-    const mockScopedDb: any = {
-      execute: async (fn: any) => await fn(mockDb),
-    };
-
-    const res = await createVersionCheckpoint(mockScopedDb, workspaceId, docId, userId, 'manual');
-    expect(res).toBeDefined();
-    expect(checkpointCommitted).toBe(true);
-    expect(res.version_number).toBe(2);
-
-    vi.unstubAllGlobals();
-  });
-
-  // =========================================================================
-  // TEST 6 — No active room (Blocker 3)
-  // =========================================================================
-  it('TEST 6: No active room: createVersionCheckpoint succeeds normally when flush returns 200 { active: false }', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ active: false }),
-    }));
-
-    const createUpdateBuilder = () => {
-      const ub: any = {
-        set: () => ub,
-        where: () => ub,
-        execute: async () => {},
-        executeTakeFirst: async () => ({ numUpdatedRows: 1n }),
-      };
-      return ub;
-    };
-
-    const mockDb: any = {
-      selectFrom: (table: string) => ({
-        where: () => ({
-          where: () => ({
-            select: () => ({
-              forUpdate: () => ({
-                executeTakeFirst: async () => ({
-                  id: docId,
-                  title: 'Dormant Title',
-                  content_text: 'Dormant Text',
-                  is_archived: 0,
-                  snapshot_key: `versions/${docId}/1.yjs`,
-                  fencing_token: 0,
-                }),
-              }),
-            }),
-          }),
-          select: () => ({
-            executeTakeFirst: async () => ({ max_ver: 1 }),
-          }),
-        }),
-      }),
-      updateTable: () => createUpdateBuilder(),
-      insertInto: () => ({
-        values: (vals: any) => ({
-          returningAll: () => ({
-            executeTakeFirstOrThrow: async () => ({ id: 'ver-2', ...vals }),
-          }),
-        }),
-      }),
-    };
-
-    const mockScopedDb: any = {
-      execute: async (fn: any) => await fn(mockDb),
-    };
-
-    const res = await createVersionCheckpoint(mockScopedDb, workspaceId, docId, userId, 'manual');
     expect(res).toBeDefined();
     expect(res.version_number).toBe(2);
-
-    vi.unstubAllGlobals();
+    expect(res.snapshot_key).toBe(`versions/${docId}/2.yjs`);
+    expect(res.content_text).toContain('Live room active text');
+    expect(dbDocRow.snapshot_version).toBe(2);
+    expect(room.lastPersistedSeq).toBe(room.docSeq);
   });
 
   // =========================================================================
-  // TEST 7 — Checkpoint vs restore race (Blocker 3B)
+  // TEST 9 — Edit immediately around checkpoint (Option A race elimination)
   // =========================================================================
-  it('TEST 7: Manual checkpoint vs restore: serialized by distributed lock', async () => {
-    const lockKey = `document:${docId}`;
-    let restoreRanFirst = false;
-    let checkpointRanSecond = false;
+  it('TEST 9: Edit immediately around checkpoint: checkpoint captures state at lock acquisition', async () => {
+    const room = await getOrCreateRoom(docId);
 
-    // Simulate concurrent restore acquiring lock, then checkpoint acquiring lock
-    const pRestore = withDistributedLock(lockKey, async () => {
-      await new Promise((r) => setTimeout(r, 40));
-      restoreRanFirst = true;
+    // Edit 1 arrives
+    room.doc.getText('default').insert(0, 'Edit 1 before checkpoint. ');
+
+    // Checkpoint executes
+    const checkpoint = await createDocumentCheckpoint(docId, workspaceId, userId, 'manual');
+
+    // Edit 2 arrives immediately after
+    room.doc.getText('default').insert(0, 'Edit 2 after checkpoint. ');
+
+    expect(checkpoint.content_text).toContain('Edit 1 before checkpoint.');
+    expect(checkpoint.content_text).not.toContain('Edit 2 after checkpoint.');
+
+    // Storage recovery snapshot was also updated during checkpoint
+    const storedRecovery = storageSnapshots.get(docId);
+    expect(storedRecovery).toBeDefined();
+    const recoveryDoc = new Y.Doc();
+    Y.applyUpdate(recoveryDoc, storedRecovery!);
+    expect(recoveryDoc.getText('default').toString()).toContain('Edit 1 before checkpoint.');
+  });
+
+  // =========================================================================
+  // TEST 10 — Lock loss during checkpoint
+  // =========================================================================
+  it('TEST 10: Lock loss: fails closed before DB commit if lock verification fails', async () => {
+    const prevVersion = dbDocRow.snapshot_version;
+    const prevVersionsCount = dbVersions.length;
+
+    vi.spyOn(storage, 'saveVersionSnapshot').mockImplementationOnce(async () => {
+      throw new LockLostError('Lock lost during checkpoint');
     });
 
-    const pCheckpoint = (async () => {
-      await new Promise((r) => setTimeout(r, 10)); // initiates while restore holds lock
-      return await withDistributedLock(lockKey, async () => {
-        expect(restoreRanFirst).toBe(true); // Must execute strictly after restore releases lock!
-        checkpointRanSecond = true;
+    await expect(
+      createDocumentCheckpoint(docId, workspaceId, userId, 'manual')
+    ).rejects.toThrow(LockLostError);
+
+    // Invariant: No version committed in DB
+    expect(dbDocRow.snapshot_version).toBe(prevVersion);
+    expect(dbVersions.length).toBe(prevVersionsCount);
+  });
+
+  // =========================================================================
+  // TEST 11 — Version/Key Matching Invariant
+  // =========================================================================
+  it('TEST 11: Version/key invariant: for every committed row, parseVersion(snapshot_key) === version_number', async () => {
+    function parseVersionFromKey(key: string): number {
+      const match = key.match(/\/(\d+)\.yjs$/);
+      if (!match) throw new Error(`Invalid snapshot key format: ${key}`);
+      return parseInt(match[1], 10);
+    }
+
+    // Run several checkpoints
+    await createDocumentCheckpoint(docId, workspaceId, userId, 'manual');
+    await createDocumentCheckpoint(docId, workspaceId, userId, 'manual');
+    await restoreDocument(docId, 1, userId);
+
+    expect(dbVersions.length).toBeGreaterThanOrEqual(4);
+
+    for (const v of dbVersions) {
+      expect(parseVersionFromKey(v.snapshot_key)).toBe(v.version_number);
+    }
+  });
+
+  // =========================================================================
+  // TEST 12 — Multi-Instance Real Redis Fencing & Lock Serialization
+  // =========================================================================
+  it('TEST 12: Real Redis serialization: prevents two simultaneous critical sections on same document', async () => {
+    const lockKey = `document:multi-instance-${Date.now()}`;
+    const executionOrder: string[] = [];
+    const tokens: number[] = [];
+
+    const p1 = withDistributedLock(lockKey, async (ctx1) => {
+      tokens.push(ctx1.fencingToken);
+      executionOrder.push('start:1');
+      await new Promise((r) => setTimeout(r, 40));
+      executionOrder.push('end:1');
+    });
+
+    const p2 = (async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return await withDistributedLock(lockKey, async (ctx2) => {
+        tokens.push(ctx2.fencingToken);
+        executionOrder.push('start:2');
+        executionOrder.push('end:2');
       });
     })();
 
-    await Promise.all([pRestore, pCheckpoint]);
-    expect(restoreRanFirst).toBe(true);
-    expect(checkpointRanSecond).toBe(true);
+    await Promise.all([p1, p2]);
+
+    expect(executionOrder).toEqual(['start:1', 'end:1', 'start:2', 'end:2']);
+    expect(tokens[1]).toBeGreaterThan(tokens[0]);
   });
 
   // =========================================================================
-  // TEST 8 — Eviction guard refinement (Finding 4)
+  // TEST 13 — Eviction guard refinement (from Round 2)
   // =========================================================================
-  it('TEST 8: Refined eviction guard: genuine LockLostError evicts room even if isRestoring is true', async () => {
+  it('TEST 13: Refined eviction guard: genuine LockLostError evicts room even if isRestoring is true', async () => {
     const room = await getOrCreateRoom(docId);
-    room.isRestoring = true; // Restore in progress
+    room.isRestoring = true;
 
     let evicted = false;
     let evictionReason = '';
 
-    // Mock WebSocket connection to detect close code
     const mockWs: any = {
       readyState: 1,
       close: (code: number, reason: string) => {
@@ -525,61 +569,13 @@ describe('Phase 5 T4 Remediation Round 2: Adversarial Concurrency & Fencing Test
       effectiveRole: 'editor',
     });
 
-    // Simulate snapshot service throwing genuine LockLostError
     vi.spyOn(storage, 'saveRecoverySnapshot').mockRejectedValue(
       new LockLostError('Lock lease expired in Redis')
     );
 
-    // Trigger room persistence
     await expect(queueRoomPersistence(room)).rejects.toThrow(LockLostError);
 
-    // Invariant: Genuine LockLostError MUST evict the room even when isRestoring is true!
     expect(evicted).toBe(true);
     expect(getRoom(docId)).toBeUndefined();
-  });
-
-  // =========================================================================
-  // TEST 9 — Version/Key Matching Invariant
-  // =========================================================================
-  it('TEST 9: ParseVersion invariant: version_number must strictly equal snapshot_key version for all versions', () => {
-    function parseVersionFromKey(key: string): number {
-      const match = key.match(/\/(\d+)\.yjs$/);
-      if (!match) throw new Error(`Invalid snapshot key format: ${key}`);
-      return parseInt(match[1], 10);
-    }
-
-    // Seed test versions across multiple ranges
-    const versions = [
-      { version_number: 1, snapshot_key: `versions/${docId}/1.yjs` },
-      { version_number: 2, snapshot_key: `versions/${docId}/2.yjs` },
-      { version_number: 15, snapshot_key: `versions/${docId}/15.yjs` },
-      { version_number: 999, snapshot_key: `versions/${docId}/999.yjs` },
-    ];
-
-    for (const v of versions) {
-      expect(parseVersionFromKey(v.snapshot_key)).toBe(v.version_number);
-    }
-  });
-
-  // =========================================================================
-  // TEST 10 — Multi-Instance Real Redis Fencing & Lock Serialization
-  // =========================================================================
-  it('TEST 10: Multi-instance behavior: real Redis lock hands out strictly increasing fencing tokens and serializes execution', async () => {
-    const lockKey = `document:multi-instance-${Date.now()}`;
-    const tokens: number[] = [];
-
-    // Instance A acquires lock
-    await withDistributedLock(lockKey, async (ctxA) => {
-      tokens.push(ctxA.fencingToken);
-      expect(ctxA.fencingToken).toBeGreaterThan(0);
-    });
-
-    // Instance B acquires lock
-    await withDistributedLock(lockKey, async (ctxB) => {
-      tokens.push(ctxB.fencingToken);
-      expect(ctxB.fencingToken).toBeGreaterThan(tokens[0]);
-    });
-
-    expect(tokens[1]).toBeGreaterThan(tokens[0]);
   });
 });

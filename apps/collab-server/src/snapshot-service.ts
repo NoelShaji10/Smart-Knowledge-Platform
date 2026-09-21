@@ -8,7 +8,7 @@ import {
   loadVersionSnapshot,
   saveVersionSnapshot,
 } from '@knowledge/storage';
-import { StaleFencingTokenError } from '@knowledge/redis';
+import { withDistributedLock, LockContext, StaleFencingTokenError } from '@knowledge/redis';
 import { getPgBoss, QUEUE_INDEX_DOCUMENT } from '@knowledge/jobs';
 
 /**
@@ -272,12 +272,40 @@ export async function createVersionCheckpointOnSessionEnd(
   documentId: string,
   doc: Y.Doc,
   actorUserId?: string,
-  fencingToken?: number
+  lockContextOrToken?: LockContext | number
 ): Promise<void> {
+  const isLockContext =
+    lockContextOrToken !== undefined &&
+    typeof lockContextOrToken === 'object' &&
+    typeof (lockContextOrToken as any).assertLockValid === 'function';
+
+  if (isLockContext) {
+    const lockContext = lockContextOrToken as LockContext;
+    return await executeSessionEndCheckpoint(documentId, doc, actorUserId, lockContext.fencingToken, lockContext);
+  } else {
+    const rawToken = typeof lockContextOrToken === 'number' ? lockContextOrToken : undefined;
+    return await withDistributedLock(`document:${documentId}`, async (lockContext) => {
+      const effectiveToken = rawToken !== undefined ? rawToken : lockContext?.fencingToken;
+      return await executeSessionEndCheckpoint(documentId, doc, actorUserId, effectiveToken, lockContext);
+    });
+  }
+}
+
+async function executeSessionEndCheckpoint(
+  documentId: string,
+  doc: Y.Doc,
+  actorUserId?: string,
+  fencingToken?: number,
+  lockContext?: LockContext
+): Promise<void> {
+  lockContext?.assertLockValid();
+  await lockContext?.verifyOwnership();
+
   const snapshotBytes = Y.encodeStateAsUpdate(doc);
   const contentText = extractSearchableText(doc);
 
   const checkpointData = await withSystemContext(async (systemDb) => {
+    lockContext?.assertLockValid();
     const docRow = await systemDb
       .selectFrom('documents')
       .where('id', '=', documentId)
@@ -315,13 +343,20 @@ export async function createVersionCheckpointOnSessionEnd(
 
   if (!checkpointData) return;
 
+  lockContext?.assertLockValid();
+  await lockContext?.verifyOwnership();
+
   const versionKey = await saveVersionSnapshot(
     documentId,
     checkpointData.nextVersion,
     snapshotBytes
   );
 
+  lockContext?.assertLockValid();
+  await lockContext?.verifyOwnership();
+
   await withSystemContext(async (systemDb) => {
+    lockContext?.assertLockValid();
     let docQuery = systemDb
       .selectFrom('documents')
       .where('id', '=', documentId)

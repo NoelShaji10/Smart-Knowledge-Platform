@@ -3,12 +3,13 @@ import * as Y from 'yjs';
 export { Y };
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
-import type { WorkspaceRole, DocumentRole } from '@knowledge/types';
+import type { WorkspaceRole, DocumentRole, VersionTrigger } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { sql } from 'kysely';
 import { withSystemContext } from '@knowledge/database';
 import { withDistributedLock, LockContext, LockOptions, StaleFencingTokenError, LockLostError } from '@knowledge/redis';
-import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot } from '@knowledge/storage';
+import { loadVersionSnapshot, saveVersionSnapshot, saveRecoverySnapshot, loadRecoverySnapshot } from '@knowledge/storage';
+import { getPgBoss, QUEUE_INDEX_DOCUMENT } from '@knowledge/jobs';
 import {
   loadRoomSnapshot,
   persistRecoverySnapshot,
@@ -419,7 +420,7 @@ export async function removeRoomIfEmpty(documentId: string, lastUserId?: string)
         documentId,
         room.doc,
         lastUserId || room.lastActiveUserId,
-        lockContext?.fencingToken
+        lockContext
       );
     } catch (err) {
       console.error(`[collab-server] Error during room shutdown persistence for ${documentId}:`, err);
@@ -865,60 +866,39 @@ export async function restoreDocument(
           };
         });
 
-        // Step C: ONLY AFTER PostgreSQL transaction successfully commits:
-        // Update MinIO recovery snapshot (latest.yjs) with the committed fencing token!
-        // Blocker 1: Fenced post-commit update with lock verification
-        try {
-          lockContext?.assertLockValid();
-          await lockContext?.verifyOwnership();
+        // Step C: ONLY AFTER PostgreSQL commits: update MinIO recovery snapshot (latest.yjs)
+        // Blocker 1: Fenced post-commit update with lock verification (fail-closed on DB / MinIO errors)
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
 
-          const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
-          if (recoveryKey) {
-            await withSystemContext(async (systemDb) => {
-              const res = await systemDb
-                .updateTable('documents')
-                .set({ snapshot_key: recoveryKey })
-                .where('id', '=', documentId)
-                .where((eb) => {
-                  if (fencingToken > 0) {
-                    return eb.and([
-                      eb.or([
-                        eb('fencing_token', '<=', fencingToken),
-                        eb('fencing_token', 'is', null),
-                      ]),
-                      eb('snapshot_version', '<=', allocatedVersion),
-                    ]);
-                  }
-                  return eb('snapshot_version', '<=', allocatedVersion);
-                })
-                .executeTakeFirst();
+        const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+        if (recoveryKey) {
+          await withSystemContext(async (systemDb) => {
+            const res = await systemDb
+              .updateTable('documents')
+              .set({ snapshot_key: recoveryKey })
+              .where('id', '=', documentId)
+              .where((eb) => {
+                if (fencingToken > 0) {
+                  return eb.and([
+                    eb.or([
+                      eb('fencing_token', '<=', fencingToken),
+                      eb('fencing_token', 'is', null),
+                    ]),
+                    eb('snapshot_version', '<=', allocatedVersion),
+                  ]);
+                }
+                return eb('snapshot_version', '<=', allocatedVersion);
+              })
+              .executeTakeFirst();
 
-              const numUpdated = Number(res?.numUpdatedRows || 0);
-              if (numUpdated === 0) {
-                console.warn(
-                  `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
-                );
-              }
-            }).catch((dbErr) => {
+            const numUpdated = Number(res?.numUpdatedRows || 0);
+            if (numUpdated === 0) {
               console.warn(
-                `[collab-server] Failed to update recovery snapshot pointer in DB for ${documentId}:`,
-                dbErr
+                `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
               );
-            });
-          }
-        } catch (storageErr: any) {
-          if (
-            storageErr instanceof LockLostError ||
-            storageErr?.name === 'LockLostError' ||
-            storageErr instanceof StaleFencingTokenError ||
-            storageErr?.name === 'StaleFencingTokenError'
-          ) {
-            throw storageErr;
-          }
-          console.warn(
-            `[collab-server] Failed to update recovery snapshot after restore commit for ${documentId}:`,
-            storageErr
-          );
+            }
+          });
         }
 
         // Step D: Update in-memory room state and broadcast to clients
@@ -1071,58 +1051,38 @@ export async function restoreDocument(
       });
 
       // Step C: ONLY AFTER PostgreSQL commits: update MinIO recovery snapshot (latest.yjs)
-      // Blocker 1: Fenced post-commit update with lock verification
-      try {
-        lockContext?.assertLockValid();
-        await lockContext?.verifyOwnership();
+      // Blocker 1: Fenced post-commit update with lock verification (fail-closed on DB / MinIO errors)
+      lockContext?.assertLockValid();
+      await lockContext?.verifyOwnership();
 
-        const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
-        if (recoveryKey) {
-          await withSystemContext(async (systemDb) => {
-            const res = await systemDb
-              .updateTable('documents')
-              .set({ snapshot_key: recoveryKey })
-              .where('id', '=', documentId)
-              .where((eb) => {
-                if (fencingToken > 0) {
-                  return eb.and([
-                    eb.or([
-                      eb('fencing_token', '<=', fencingToken),
-                      eb('fencing_token', 'is', null),
-                    ]),
-                    eb('snapshot_version', '<=', allocatedVersion),
-                  ]);
-                }
-                return eb('snapshot_version', '<=', allocatedVersion);
-              })
-              .executeTakeFirst();
+      const recoveryKey = await saveRecoverySnapshot(documentId, restoredBytes, fencingToken);
+      if (recoveryKey) {
+        await withSystemContext(async (systemDb) => {
+          const res = await systemDb
+            .updateTable('documents')
+            .set({ snapshot_key: recoveryKey })
+            .where('id', '=', documentId)
+            .where((eb) => {
+              if (fencingToken > 0) {
+                return eb.and([
+                  eb.or([
+                    eb('fencing_token', '<=', fencingToken),
+                    eb('fencing_token', 'is', null),
+                  ]),
+                  eb('snapshot_version', '<=', allocatedVersion),
+                ]);
+              }
+              return eb('snapshot_version', '<=', allocatedVersion);
+            })
+            .executeTakeFirst();
 
-            const numUpdated = Number(res?.numUpdatedRows || 0);
-            if (numUpdated === 0) {
-              console.warn(
-                `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
-              );
-            }
-          }).catch((dbErr) => {
+          const numUpdated = Number(res?.numUpdatedRows || 0);
+          if (numUpdated === 0) {
             console.warn(
-              `[collab-server] Failed to update recovery snapshot pointer in DB for ${documentId}:`,
-              dbErr
+              `[collab-server] Recovery snapshot pointer update skipped for ${documentId}: superseded in DB (token ${fencingToken}, ver ${allocatedVersion})`
             );
-          });
-        }
-      } catch (storageErr: any) {
-        if (
-          storageErr instanceof LockLostError ||
-          storageErr?.name === 'LockLostError' ||
-          storageErr instanceof StaleFencingTokenError ||
-          storageErr?.name === 'StaleFencingTokenError'
-        ) {
-          throw storageErr;
-        }
-        console.warn(
-          `[collab-server] Failed to update recovery snapshot after room-less restore commit for ${documentId}:`,
-          storageErr
-        );
+          }
+        });
       }
 
       lockContext?.assertLockValid();
@@ -1134,3 +1094,189 @@ export async function restoreDocument(
 }
 
 export const restoreActiveRoom = restoreDocument;
+
+/**
+ * Create a document version checkpoint unified under withDocumentLock.
+ * Option A:
+ * - If room is active in memory: reads room.doc directly (authoritative in-memory state),
+ *   saves recovery snapshot to MinIO, updates room.lastPersistedSeq, and writes the version checkpoint.
+ * - If room is not active: reads recovery snapshot or document content_text and writes the version checkpoint.
+ * - Entire flow is serialized under withDocumentLock(`document:${documentId}`), eliminating race conditions
+ *   between background flushes and version number allocation.
+ */
+export async function createDocumentCheckpoint(
+  documentId: string,
+  workspaceId: string,
+  userId: string,
+  trigger: VersionTrigger = 'manual',
+  options?: LockOptions
+) {
+  return await withDocumentLock(
+    documentId,
+    async (lockContext) => {
+      lockContext?.assertLockValid();
+      await lockContext?.verifyOwnership();
+      const fencingToken = lockContext?.fencingToken ?? 0;
+
+      const room = rooms.get(documentId);
+      let snapshotBytes: Uint8Array | null = null;
+      let title: string | null = null;
+      let contentText: string | null = null;
+      let recoveryKey: string | null = null;
+
+      if (room) {
+        // 1. Active room: read authoritative doc
+        snapshotBytes = Y.encodeStateAsUpdate(room.doc);
+        contentText = extractSearchableText(room.doc);
+
+        // Persist recovery snapshot
+        recoveryKey = await saveRecoverySnapshot(documentId, snapshotBytes, fencingToken);
+        room.lastPersistedSeq = room.docSeq;
+        broadcastPersistence(room, PERSISTENCE_STATUS_PERSISTED, room.lastPersistedSeq);
+      } else {
+        // 2. Room-less: read durable recovery snapshot
+        snapshotBytes = await loadRecoverySnapshot(documentId);
+      }
+
+      lockContext?.assertLockValid();
+      await lockContext?.verifyOwnership();
+
+      const result = await withSystemContext(async (systemDb) => {
+        return await systemDb.transaction().execute(async (trx) => {
+          lockContext?.assertLockValid();
+
+          let docQuery = trx
+            .selectFrom('documents')
+            .where('id', '=', documentId)
+            .where('workspace_id', '=', workspaceId)
+            .select(['id', 'title', 'content_text', 'is_archived', 'snapshot_key', 'snapshot_version', 'fencing_token']);
+
+          if (typeof (docQuery as any).forUpdate === 'function') {
+            docQuery = (docQuery as any).forUpdate();
+          }
+          const doc = await docQuery.executeTakeFirst();
+
+          if (!doc) {
+            throw new Error('Document not found');
+          }
+          if (doc.is_archived) {
+            throw new Error('Cannot create version checkpoint for an archived document');
+          }
+
+          if (fencingToken > 0 && Number(doc.fencing_token || 0) > fencingToken) {
+            throw new StaleFencingTokenError(
+              `Stale checkpoint for ${documentId}: lock token ${fencingToken} < DB token ${doc.fencing_token}`
+            );
+          }
+
+          title = doc.title;
+          if (!contentText) {
+            contentText = doc.content_text;
+          }
+
+          if ((!snapshotBytes || snapshotBytes.length === 0) && doc.content_text) {
+            const tempDoc = new Y.Doc();
+            const frag = tempDoc.getXmlFragment('default');
+            const p = new Y.XmlElement('p');
+            p.insert(0, [new Y.XmlText(doc.content_text)]);
+            frag.insert(0, [p]);
+            snapshotBytes = Y.encodeStateAsUpdate(tempDoc);
+          }
+
+          const maxRes = await trx
+            .selectFrom('document_versions')
+            .where('document_id', '=', documentId)
+            .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+            .executeTakeFirst();
+
+          const currentMaxVersion = Number(maxRes?.max_ver || 0);
+          const nextVersion = currentMaxVersion + 1;
+
+          lockContext?.assertLockValid();
+          await lockContext?.verifyOwnership();
+
+          let versionKey: string | null = null;
+          if (snapshotBytes && snapshotBytes.length > 0) {
+            versionKey = await saveVersionSnapshot(documentId, nextVersion, snapshotBytes);
+          }
+
+          lockContext?.assertLockValid();
+          await lockContext?.verifyOwnership();
+
+          const versionRow = await trx
+            .insertInto('document_versions')
+            .values({
+              document_id: documentId,
+              version_number: nextVersion,
+              snapshot_key: versionKey,
+              title: title || doc.title,
+              content_text: contentText,
+              created_by: userId,
+              trigger: trigger,
+              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+
+          await trx
+            .updateTable('documents')
+            .set({
+              snapshot_version: nextVersion,
+              content_text: contentText,
+              ...(recoveryKey ? { snapshot_key: recoveryKey } : {}),
+              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+              updated_at: new Date(),
+            })
+            .where('id', '=', documentId)
+            .where('workspace_id', '=', workspaceId)
+            .where((eb) => {
+              if (fencingToken > 0) {
+                return eb.or([
+                  eb('fencing_token', '<=', fencingToken),
+                  eb('fencing_token', 'is', null),
+                ]);
+              }
+              return eb.val(true);
+            })
+            .execute();
+
+          await trx
+            .insertInto('audit_events')
+            .values({
+              workspace_id: workspaceId,
+              actor_id: userId,
+              action: 'document.version.created',
+              resource_type: 'document',
+              resource_id: documentId,
+              metadata: JSON.stringify({
+                version_number: nextVersion,
+                trigger,
+              }),
+              ip_address: null,
+              user_agent: null,
+            })
+            .execute();
+
+          lockContext?.assertLockValid();
+
+          return versionRow;
+        });
+      });
+
+      try {
+        const boss = getPgBoss();
+        await boss.send(QUEUE_INDEX_DOCUMENT, {
+          documentId,
+          version: result.version_number,
+          workspaceId,
+        });
+      } catch {
+        // Job queue send errors handled gracefully
+      }
+
+      return result;
+    },
+    options
+  );
+}
+

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { api, Workspace, ApiError } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -16,7 +16,7 @@ interface WorkspaceContextType {
   createWorkspace: (name: string) => Promise<Workspace>;
 }
 
-const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
+export const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const { user, loading: authLoading } = useAuth();
@@ -25,6 +25,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [userRole, setUserRole] = useState<'owner' | 'admin' | 'editor' | 'viewer' | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  const loadRequestIdRef = useRef<number>(0);
 
   const refreshWorkspaces = useCallback(async (): Promise<Workspace[]> => {
     setLoading(true);
@@ -65,10 +67,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, [user, authLoading, refreshWorkspaces]);
 
   const loadWorkspace = useCallback(async (workspaceId: string): Promise<Workspace | null> => {
+    const currentRequestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await api.getWorkspace(workspaceId);
+      if (currentRequestId !== loadRequestIdRef.current) {
+        return null;
+      }
       setActiveWorkspace(res.workspace);
       setUserRole(res.userRole);
       setWorkspaces((prev) => {
@@ -80,9 +86,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       });
       return res.workspace;
     } catch (err) {
+      if (currentRequestId !== loadRequestIdRef.current) {
+        return null;
+      }
       if (err instanceof ApiError) {
         if (err.status === 0) {
           setError('Unable to connect to the server. Please check your network connection.');
+        } else if (err.status === 403) {
+          setError('Access denied: You do not have permission to access this workspace.');
         } else if (err.status === 404) {
           setError('Workspace not found.');
         } else if (err.status >= 500) {
@@ -97,7 +108,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setUserRole(null);
       return null;
     } finally {
-      setLoading(false);
+      if (currentRequestId === loadRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -147,3 +160,8 @@ export function useWorkspace() {
   }
   return context;
 }
+
+export function useWorkspaceOptional() {
+  return useContext(WorkspaceContext) || null;
+}
+

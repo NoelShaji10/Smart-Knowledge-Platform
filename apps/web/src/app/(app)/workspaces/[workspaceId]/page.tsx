@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
+import { useDocumentNavigationOptional } from '@/contexts/DocumentNavigationContext';
 import { api, Document, ApiError } from '@/lib/api';
 import { Button, Skeleton, useToast } from '@/components/ui';
 import { CreateDocumentModal } from '@/components/documents/CreateDocumentModal';
@@ -14,15 +15,20 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   const { showToast } = useToast();
   const { activeWorkspace, loadWorkspace, userRole, loading, error } = useWorkspace();
   const workspaceId = params?.workspaceId;
+  const nav = useDocumentNavigationOptional();
 
-  const [documents, setDocuments] = useState<Document[]>([]);
-  const [docsLoading, setDocsLoading] = useState(true);
-  const [docsError, setDocsError] = useState<string | null>(null);
+  const [localDocs, setLocalDocs] = useState<Document[]>([]);
+  const [localDocsLoading, setLocalDocsLoading] = useState(true);
+  const [localDocsError, setLocalDocsError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   const canCreate = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
   const isViewer = userRole === 'viewer';
+
+  const documents = nav ? nav.activeDocuments : localDocs;
+  const docsLoading = nav ? nav.loading : localDocsLoading;
+  const docsError = nav ? nav.error : localDocsError;
 
   useEffect(() => {
     if (workspaceId) {
@@ -31,12 +37,17 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   }, [workspaceId, loadWorkspace]);
 
   const fetchWorkspaceDocuments = useCallback(async () => {
+    if (nav) {
+      setRefreshError(null);
+      await nav.refreshDocuments();
+      return;
+    }
     if (!workspaceId) return;
-    setDocsLoading(true);
+    setLocalDocsLoading(true);
     try {
       const res = await api.listDocuments(workspaceId, { includeArchived: false });
-      setDocuments(res.documents);
-      setDocsError(null);
+      setLocalDocs(res.documents);
+      setLocalDocsError(null);
       setRefreshError(null);
     } catch (err) {
       const msg =
@@ -48,27 +59,28 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
           ? err.message
           : 'Failed to load documents';
 
-      setDocuments((prev) => {
+      setLocalDocs((prev) => {
         if (prev.length > 0) {
           setRefreshError(msg);
         } else {
-          setDocsError(msg);
+          setLocalDocsError(msg);
         }
         return prev;
       });
       showToast(msg, 'error');
     } finally {
-      setDocsLoading(false);
+      setLocalDocsLoading(false);
     }
-  }, [workspaceId, showToast]);
+  }, [workspaceId, nav, showToast]);
 
   useEffect(() => {
-    if (workspaceId) {
+    if (!nav && workspaceId) {
       fetchWorkspaceDocuments();
     }
-  }, [workspaceId, fetchWorkspaceDocuments]);
+  }, [workspaceId, nav, fetchWorkspaceDocuments]);
 
   useEffect(() => {
+    if (nav) return;
     function handleRefresh(e: Event) {
       const customEvt = e as CustomEvent<{ document: Document }>;
       if (customEvt.detail?.document) {
@@ -78,7 +90,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
           return;
         }
 
-        setDocuments((prev) => {
+        setLocalDocs((prev) => {
           const exists = prev.some((d) => d.id === updated.id);
           if (exists) {
             return prev.map((d) => (d.id === updated.id ? updated : d));
@@ -95,7 +107,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
       window.removeEventListener('document:updated', handleRefresh);
       window.removeEventListener('workspace:refresh', handleRefresh);
     };
-  }, [fetchWorkspaceDocuments, workspaceId]);
+  }, [fetchWorkspaceDocuments, workspaceId, nav]);
 
   if ((loading && !activeWorkspace) || (docsLoading && documents.length === 0 && !docsError)) {
     return (
@@ -206,10 +218,14 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
             isOpen={isCreateModalOpen}
             onClose={() => setIsCreateModalOpen(false)}
             onCreated={(newDoc) => {
-              setDocuments((prev) => {
-                if (prev.some((d) => d.id === newDoc.id)) return prev;
-                return [newDoc, ...prev];
-              });
+              if (nav) {
+                nav.addDocument(newDoc);
+              } else {
+                setLocalDocs((prev) => {
+                  if (prev.some((d) => d.id === newDoc.id)) return prev;
+                  return [newDoc, ...prev];
+                });
+              }
             }}
           />
         )}

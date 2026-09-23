@@ -2,8 +2,11 @@
 
 import React, { useState } from 'react';
 import { Document, DocumentCapabilities, api, ApiError } from '@/lib/api';
+import { useWorkspaceOptional } from '@/contexts/WorkspaceContext';
+import { useDocumentNavigationOptional } from '@/contexts/DocumentNavigationContext';
 import { Button, Badge, useToast } from '@/components/ui';
 import { DocumentPermissionsModal } from './DocumentPermissionsModal';
+import { Breadcrumbs } from './Breadcrumbs';
 import { SaveState } from '../editor/DocumentEditor';
 import { CollaboratorAvatars } from '../editor/CollaboratorAvatars';
 import { CollabUser } from '@/hooks/useCollaboration';
@@ -29,6 +32,9 @@ export function DocumentHeader({
   onDocumentUpdated,
 }: DocumentHeaderProps) {
   const { showToast } = useToast();
+  const ws = useWorkspaceOptional();
+  const activeWorkspace = ws?.activeWorkspace || null;
+  const nav = useDocumentNavigationOptional();
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -77,6 +83,15 @@ export function DocumentHeader({
   return (
     <>
       <header className={styles.header}>
+        <div className={styles.breadcrumbSection}>
+          <Breadcrumbs
+            workspaceId={workspaceId}
+            workspaceName={activeWorkspace?.name || 'Workspace'}
+            currentDocument={document}
+            documents={nav?.documents}
+          />
+        </div>
+
         <div className={styles.metaSection}>
           <span className={styles.saveBadge}>
             {saveState === 'saving' && <span className={`${styles.saveBadge} ${styles.saving}`}>Saving...</span>}

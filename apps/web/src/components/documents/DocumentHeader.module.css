@@ -6,12 +6,30 @@
   border-bottom: 1px solid var(--border);
   background-color: var(--bg);
   flex-shrink: 0;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.breadcrumbSection {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  max-width: 50%;
+  overflow: hidden;
 }
 
 .metaSection {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+
+@media (max-width: 768px) {
+  .breadcrumbSection {
+    max-width: 100%;
+    width: 100%;
+  }
 }
 
 .saveBadge {

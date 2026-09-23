@@ -1,9 +1,11 @@
-'use client';
-
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
+import {
+  computeAncestors,
+  useDocumentNavigationOptional,
+} from '@/contexts/DocumentNavigationContext';
 import { api, Document, ApiError } from '@/lib/api';
 import { Skeleton, Button, Dropdown, DropdownItem, useToast } from '@/components/ui';
 import { MoveDocumentModal } from './MoveDocumentModal';
@@ -28,6 +30,7 @@ interface TreeNodeProps {
   onRenameCancel: () => void;
   canManage: boolean;
   canArchive: boolean;
+  onNavigate?: () => void;
 }
 
 function TreeNode({
@@ -48,6 +51,7 @@ function TreeNode({
   onRenameCancel,
   canManage,
   canArchive,
+  onNavigate,
 }: TreeNodeProps) {
   const children = childrenMap.get(document.id) || [];
   const hasChildren = children.length > 0;
@@ -155,6 +159,7 @@ function TreeNode({
               className={styles.docTitle}
               title={document.title || 'Untitled Document'}
               aria-current={isActive ? 'page' : undefined}
+              onClick={() => onNavigate?.()}
             >
               {document.title || 'Untitled Document'}
             </Link>
@@ -219,6 +224,7 @@ function TreeNode({
               onRenameCancel={onRenameCancel}
               canManage={canManage}
               canArchive={canArchive}
+              onNavigate={onNavigate}
             />
           ))}
         </ul>
@@ -227,15 +233,25 @@ function TreeNode({
   );
 }
 
-export function DocumentTree() {
+export interface DocumentTreeProps {
+  onNavigate?: () => void;
+}
+
+export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { activeWorkspace, userRole } = useWorkspace();
   const { showToast } = useToast();
+  const nav = useDocumentNavigationOptional();
 
-  const [documents, setDocuments] = useState<Document[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Local state fallback when nav context is not present (e.g. standalone test)
+  const [localDocs, setLocalDocs] = useState<Document[]>([]);
+  const [localLoading, setLocalLoading] = useState(true);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const documents = nav ? nav.documents : localDocs;
+  const loading = nav ? nav.loading : localLoading;
+  const error = nav ? nav.error : localError;
 
   // Create document modal state
   const [createModal, setCreateModal] = useState<{
@@ -269,15 +285,66 @@ export function DocumentTree() {
   const match = pathname?.match(/\/documents\/([a-zA-Z0-9-]+)/);
   const currentDocId = match ? match[1] : null;
 
+  // Auto-expand ancestors of active document whenever currentDocId or documents change
+  useEffect(() => {
+    if (!currentDocId || documents.length === 0) return;
+    const ancestors = computeAncestors(currentDocId, documents);
+    if (ancestors.length > 0) {
+      setExpandedNodeIds((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const a of ancestors) {
+          if (!next.has(a.id)) {
+            next.add(a.id);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [currentDocId, documents]);
+
+  // Auto-expand parents on initial load of documents
+  const hasInitializedExpansionRef = useRef(false);
+  useEffect(() => {
+    if (documents.length > 0 && !hasInitializedExpansionRef.current) {
+      hasInitializedExpansionRef.current = true;
+      setExpandedNodeIds((prev) => {
+        const next = new Set(prev);
+        for (const doc of documents) {
+          if (doc.parent_id && !doc.is_archived) {
+            next.add(doc.parent_id);
+          }
+        }
+        return next;
+      });
+    }
+  }, [documents]);
+
+  // Reset expansion and state when active workspace changes
+  const lastWsIdRef = useRef<string | null>(activeWorkspace?.id || null);
+  useEffect(() => {
+    if (activeWorkspace?.id !== lastWsIdRef.current) {
+      lastWsIdRef.current = activeWorkspace?.id || null;
+      hasInitializedExpansionRef.current = false;
+      setExpandedNodeIds(new Set());
+      setRenamingDocId(null);
+      if (!nav) {
+        setLocalDocs([]);
+      }
+    }
+  }, [activeWorkspace?.id, nav]);
+
   const fetchDocuments = useCallback(async () => {
+    if (nav) {
+      return nav.refreshDocuments();
+    }
     if (!activeWorkspace) return;
-    setLoading(true);
-    setError(null);
+    setLocalLoading(true);
+    setLocalError(null);
     try {
       const res = await api.listDocuments(activeWorkspace.id, { includeArchived: true });
-      setDocuments(res.documents);
-
-      // Auto-expand ancestors of active documents
+      setLocalDocs(res.documents);
       setExpandedNodeIds((prev) => {
         const next = new Set(prev);
         for (const doc of res.documents) {
@@ -289,33 +356,35 @@ export function DocumentTree() {
       });
     } catch (err) {
       if (err instanceof ApiError && err.status === 0) {
-        setError('Unable to connect to server. Document tree offline.');
+        setLocalError('Unable to connect to server. Document tree offline.');
         showToast('Unable to connect to server. Document tree offline.', 'error');
       } else if (err instanceof ApiError && err.status >= 500) {
-        setError('Unable to load documents from server (Server Error).');
+        setLocalError('Unable to load documents from server (Server Error).');
         showToast('Unable to load document navigation from server.', 'error');
       } else if (err instanceof ApiError) {
-        setError(err.message || 'Failed to load documents');
+        setLocalError(err.message || 'Failed to load documents');
         showToast(err.message || 'Failed to load documents', 'error');
       } else if (err instanceof Error) {
-        setError(err.message || 'Failed to load documents');
+        setLocalError(err.message || 'Failed to load documents');
         showToast(err.message || 'Failed to load document navigation', 'error');
       } else {
-        setError('Failed to load documents');
+        setLocalError('Failed to load documents');
         showToast('Failed to load document navigation', 'error');
       }
     } finally {
-      setLoading(false);
+      setLocalLoading(false);
     }
-  }, [activeWorkspace, showToast]);
+  }, [activeWorkspace, nav, showToast]);
 
   useEffect(() => {
-    fetchDocuments();
-  }, [fetchDocuments]);
+    if (!nav) {
+      fetchDocuments();
+    }
+  }, [fetchDocuments, nav]);
 
-  // Synchronize externally triggered document updates (e.g. from DocumentEditor or DocumentHeader)
+  // Synchronize externally triggered document updates when running in local fallback mode
   useEffect(() => {
-    if (!activeWorkspace) return;
+    if (nav || !activeWorkspace) return;
     const currentWorkspaceId = activeWorkspace.id;
 
     function handleDocUpdated(e: Event) {
@@ -327,7 +396,7 @@ export function DocumentTree() {
           return;
         }
 
-        setDocuments((prev) => {
+        setLocalDocs((prev) => {
           const exists = prev.some((d) => d.id === updated.id);
           if (exists) {
             return prev.map((d) => (d.id === updated.id ? updated : d));
@@ -339,7 +408,7 @@ export function DocumentTree() {
 
     window.addEventListener('document:updated', handleDocUpdated);
     return () => window.removeEventListener('document:updated', handleDocUpdated);
-  }, [activeWorkspace?.id]);
+  }, [activeWorkspace?.id, nav]);
 
   const toggleExpand = (docId: string) => {
     setExpandedNodeIds((prev) => {
@@ -364,11 +433,15 @@ export function DocumentTree() {
   };
 
   const handleDocumentCreated = (newDoc: Document) => {
-    setDocuments((prev) => {
-      const exists = prev.some((d) => d.id === newDoc.id);
-      if (exists) return prev;
-      return [...prev, newDoc];
-    });
+    if (nav) {
+      nav.addDocument(newDoc);
+    } else {
+      setLocalDocs((prev) => {
+        const exists = prev.some((d) => d.id === newDoc.id);
+        if (exists) return prev;
+        return [...prev, newDoc];
+      });
+    }
     if (newDoc.parent_id) {
       setExpandedNodeIds((prev) => new Set(prev).add(newDoc.parent_id!));
     }
@@ -403,7 +476,11 @@ export function DocumentTree() {
         title: trimmed,
       });
 
-      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      if (nav) {
+        nav.updateDocument(res.document);
+      } else {
+        setLocalDocs((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      }
       showToast('Document renamed', 'success');
 
       // Dispatch global sync event for active editor
@@ -413,7 +490,11 @@ export function DocumentTree() {
     } catch (err) {
       showToast('Failed to rename document', 'error');
       // Revert title in state to ensure truthfulness
-      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, title: originalTitle } : d)));
+      if (nav) {
+        nav.updateDocument({ ...doc, title: originalTitle });
+      } else {
+        setLocalDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, title: originalTitle } : d)));
+      }
     }
   };
 
@@ -421,7 +502,11 @@ export function DocumentTree() {
     if (!activeWorkspace || !canArchive) return;
     try {
       const res = await api.archiveDocument(activeWorkspace.id, doc.id);
-      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      if (nav) {
+        nav.updateDocument(res.document);
+      } else {
+        setLocalDocs((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      }
       showToast('Document archived', 'info');
 
       // Dispatch global sync event
@@ -442,7 +527,11 @@ export function DocumentTree() {
     setRestoringDocId(doc.id);
     try {
       const res = await api.restoreDocument(activeWorkspace.id, doc.id);
-      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      if (nav) {
+        nav.updateDocument(res.document);
+      } else {
+        setLocalDocs((prev) => prev.map((d) => (d.id === doc.id ? res.document : d)));
+      }
 
       if (res.document.parent_id) {
         setExpandedNodeIds((prev) => new Set(prev).add(res.document.parent_id!));
@@ -603,6 +692,7 @@ export function DocumentTree() {
                   onRenameCancel={handleRenameCancel}
                   canManage={canManage}
                   canArchive={canArchive}
+                  onNavigate={onNavigate}
                 />
               ))}
             </ul>
@@ -667,6 +757,7 @@ export function DocumentTree() {
                       href={`/workspaces/${activeWorkspace?.id || ''}/documents/${doc.id}`}
                       className={styles.archivedTitle}
                       title={`${doc.title || 'Untitled Document'} (Archived)`}
+                      onClick={() => onNavigate?.()}
                     >
                       {doc.title || 'Untitled Document'}
                     </Link>
@@ -710,7 +801,11 @@ export function DocumentTree() {
           isOpen={true}
           onClose={() => setMovingDoc(null)}
           onMoved={(updatedDoc) => {
-            setDocuments((prev) => prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d)));
+            if (nav) {
+              nav.updateDocument(updatedDoc);
+            } else {
+              setLocalDocs((prev) => prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d)));
+            }
             if (updatedDoc.parent_id) {
               setExpandedNodeIds((prev) => new Set(prev).add(updatedDoc.parent_id!));
             }

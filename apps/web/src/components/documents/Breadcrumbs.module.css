@@ -1,0 +1,58 @@
+.breadcrumbs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--fg-secondary);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.crumbLink {
+  color: var(--fg-secondary);
+  text-decoration: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbLink:hover {
+  color: var(--fg);
+  background-color: var(--surface-alt);
+}
+
+.crumbCurrent {
+  color: var(--fg);
+  font-weight: 500;
+  padding: 2px 4px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.separator {
+  color: var(--fg-tertiary);
+  font-size: 11px;
+  user-select: none;
+}
+
+.archivedTag {
+  font-size: 10px;
+  color: var(--danger);
+  font-style: italic;
+}

@@ -61,7 +61,17 @@ export function EditorStatusBar({
   const userCount = connectedUsers.length;
 
   const collabStatusLabel = (() => {
-    if (readOnly) return 'View Only';
+    if (readOnly) {
+      if (collabStatus === 'connected') {
+        const userPart = userCount > 1 ? ` • ${userCount} collaborators` : '';
+        return `View Only • Connected${userPart}`;
+      } else if (collabStatus === 'connecting') {
+        return 'View Only • Connecting...';
+      } else if (collabStatus === 'error') {
+        return 'View Only • Connection Error';
+      }
+      return 'View Only';
+    }
     if (collabStatus === 'connected') {
       const userPart = userCount > 1 ? `${userCount} collaborators` : null;
       let persistPart = 'Saved';

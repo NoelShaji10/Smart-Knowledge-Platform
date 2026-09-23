@@ -270,11 +270,15 @@ export async function updateDocument(
       .selectFrom('documents')
       .where('id', '=', documentId)
       .where('workspace_id', '=', workspaceId)
-      .select(['id'])
+      .select(['id', 'is_archived'])
       .executeTakeFirst();
 
     if (!existing) {
       throw new Error('Document not found');
+    }
+
+    if (existing.is_archived) {
+      throw new Error('Cannot update an archived document');
     }
 
     const setValues: Record<string, unknown> = {
@@ -317,11 +321,15 @@ export async function moveDocument(
       .selectFrom('documents')
       .where('id', '=', documentId)
       .where('workspace_id', '=', workspaceId)
-      .select(['id', 'parent_id'])
+      .select(['id', 'parent_id', 'is_archived'])
       .executeTakeFirst();
 
     if (!doc) {
       throw new Error('Document not found');
+    }
+
+    if (doc.is_archived) {
+      throw new Error('Cannot move an archived document');
     }
 
     const cleanNewParentId = newParentId || null;

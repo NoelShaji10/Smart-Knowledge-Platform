@@ -151,7 +151,7 @@ documentRouter.get(
 // 4. Update title/content
 documentRouter.patch(
   '/api/v1/workspaces/:workspaceId/documents/:documentId',
-  requireWorkspace('editor'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('edit'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -187,7 +187,7 @@ documentRouter.patch(
 // 5. Move document parent
 documentRouter.post(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/move',
-  requireWorkspace('editor'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('move'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -220,7 +220,7 @@ documentRouter.post(
 // 6. Archive document
 documentRouter.post(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/archive',
-  requireWorkspace('admin'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('archive'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -251,7 +251,7 @@ documentRouter.post(
 // 7. Restore document
 documentRouter.post(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/restore',
-  requireWorkspace('admin'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('archive'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -306,7 +306,7 @@ documentRouter.get(
 // 9. Set document permission override
 documentRouter.put(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/permissions/:targetUserId',
-  requireWorkspace('admin'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('manage_permissions'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -347,7 +347,7 @@ documentRouter.put(
 // 10. Remove document permission override
 documentRouter.delete(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/permissions/:targetUserId',
-  requireWorkspace('admin'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('manage_permissions'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -386,7 +386,7 @@ documentRouter.delete(
 // 11. Create manual version checkpoint
 documentRouter.post(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/versions',
-  requireWorkspace('editor'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('edit'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -468,7 +468,7 @@ documentRouter.get(
 // 14. Restore historical document version
 documentRouter.post(
   '/api/v1/workspaces/:workspaceId/documents/:documentId/versions/:versionNumber/restore',
-  requireWorkspace('editor'),
+  requireWorkspace('viewer'),
   requireDocumentAccess('edit'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

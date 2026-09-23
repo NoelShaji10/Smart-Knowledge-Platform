@@ -13,6 +13,7 @@ import { DocumentHeader } from '@/components/documents/DocumentHeader';
 import { DocumentEditor, SaveState } from '@/components/editor/DocumentEditor';
 import { VersionHistoryPanel } from '@/components/documents/VersionHistoryPanel';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
+import { CollabUser } from '@/hooks/useCollaboration';
 import styles from './page.module.css';
 
 export default function DocumentPage({
@@ -39,6 +40,7 @@ export default function DocumentPage({
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showHistory, setShowHistory] = useState(false);
+  const [connectedUsers, setConnectedUsers] = useState<CollabUser[]>([]);
 
   useEffect(() => {
     if (workspaceId && activeWorkspace?.id !== workspaceId) {
@@ -145,6 +147,7 @@ export default function DocumentPage({
         document={document}
         capabilities={capabilities}
         saveState={saveState}
+        connectedUsers={connectedUsers}
         onToggleHistory={() => setShowHistory((prev) => !prev)}
         onDocumentUpdated={handleDocumentUpdated}
       />
@@ -184,9 +187,10 @@ export default function DocumentPage({
             workspaceId={workspaceId}
             document={document}
             readOnly={isReadOnly}
-            collaborative={!isReadOnly}
+            collaborative={!document.is_archived}
             onSaveStateChange={setSaveState}
             onDocumentUpdated={handleDocumentUpdated}
+            onConnectedUsersChange={setConnectedUsers}
           />
         </div>
 

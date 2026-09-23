@@ -241,6 +241,7 @@ export interface DocumentPermissionOverride {
   email: string;
   display_name: string;
   role: 'editor' | 'viewer' | 'none';
+  workspace_role?: 'owner' | 'admin' | 'editor' | 'viewer';
   granted_by: string;
   created_at: string;
 }
@@ -282,6 +283,18 @@ export const api = {
 
   getWorkspace: (workspaceId: string) =>
     apiRequest<WorkspaceResponse>(`/api/v1/workspaces/${workspaceId}`, { method: 'GET' }),
+
+  listWorkspaceMembers: (workspaceId: string) =>
+    apiRequest<{
+      members: Array<{
+        id: string;
+        email: string;
+        display_name: string;
+        avatar_url: string | null;
+        role: 'owner' | 'admin' | 'editor' | 'viewer';
+        created_at: string;
+      }>;
+    }>(`/api/v1/workspaces/${workspaceId}/members`, { method: 'GET' }),
 
   createWorkspace: (name: string) =>
     apiRequest<{ workspace: Workspace }>('/api/v1/workspaces', {

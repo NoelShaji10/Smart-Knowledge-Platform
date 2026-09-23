@@ -8,7 +8,7 @@ import { EditorStatusBar } from './EditorStatusBar';
 import { useToast } from '@/components/ui';
 import { useEditorSetup } from '@/hooks/useEditorSetup';
 import { useEditorAutosave, SaveState } from '@/hooks/useEditorAutosave';
-import { useCollaboration } from '@/hooks/useCollaboration';
+import { useCollaboration, CollabUser } from '@/hooks/useCollaboration';
 import { useAuth } from '@/contexts/AuthContext';
 import { getCollaboratorColor } from '@/lib/collab-colors';
 import { EditorProvider, EditorMode, EditorContextType } from '@/contexts/EditorContext';
@@ -25,6 +25,7 @@ export interface DocumentEditorProps {
   collaborative?: boolean;
   onSaveStateChange?: (state: SaveState) => void;
   onDocumentUpdated?: (doc: Document) => void;
+  onConnectedUsersChange?: (users: CollabUser[]) => void;
 }
 
 export function DocumentEditor({
@@ -34,6 +35,7 @@ export function DocumentEditor({
   collaborative,
   onSaveStateChange,
   onDocumentUpdated,
+  onConnectedUsersChange,
 }: DocumentEditorProps) {
   const isCollaborative = collaborative ?? (!readOnly && !document.is_archived);
   const { user: authUser } = useAuth();
@@ -77,6 +79,12 @@ export function DocumentEditor({
     enabled: isCollaborative,
     user: currentUser,
   });
+
+  useEffect(() => {
+    if (onConnectedUsersChange) {
+      onConnectedUsersChange(connectedUsers);
+    }
+  }, [connectedUsers, onConnectedUsersChange]);
 
   const saveFn = useCallback(
     async (newTitle: string, newContent: string, _saveRev: number) => {

@@ -256,6 +256,11 @@ export async function getDocumentPermissions(
     return db
       .selectFrom('document_permissions')
       .innerJoin('users', 'users.id', 'document_permissions.user_id')
+      .leftJoin('workspace_members', (join) =>
+        join
+          .onRef('workspace_members.user_id', '=', 'document_permissions.user_id')
+          .on('workspace_members.workspace_id', '=', workspaceId),
+      )
       .where('document_permissions.document_id', '=', documentId)
       .select([
         'users.id',
@@ -264,6 +269,7 @@ export async function getDocumentPermissions(
         'document_permissions.role',
         'document_permissions.granted_by',
         'document_permissions.created_at',
+        'workspace_members.role as workspace_role',
       ])
       .execute();
   });

@@ -19,9 +19,12 @@ export function AppShell({ children }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Extract workspaceId from URL path if present (e.g. /workspaces/[workspaceId])
+  // Route /workspaces/new is the workspace-creation route, not a workspace ID.
+  const isCreateWorkspaceRoute = pathname === '/workspaces/new' || pathname?.startsWith('/workspaces/new/');
   const match = pathname?.match(/\/workspaces\/([a-zA-Z0-9-]+)/);
-  const routeWorkspaceId = match ? match[1] : null;
-  const currentWorkspaceId = routeWorkspaceId || activeWorkspace?.id || null;
+  const rawId = match ? match[1] : null;
+  const routeWorkspaceId = rawId && rawId !== 'new' ? rawId : null;
+  const currentWorkspaceId = isCreateWorkspaceRoute ? null : (routeWorkspaceId || activeWorkspace?.id || null);
 
   const toggleSidebar = () => {
     setMobileSidebarOpen((prev) => !prev);

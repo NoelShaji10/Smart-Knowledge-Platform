@@ -86,6 +86,18 @@ export function DocumentNavigationProvider({
 
   const fetchRequestIdRef = useRef(0);
   const currentWorkspaceIdRef = useRef<string | null>(workspaceId || null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const refreshDocuments = useCallback(async (): Promise<Document[]> => {
     const targetWsId = currentWorkspaceIdRef.current;
@@ -96,17 +108,27 @@ export function DocumentNavigationProvider({
       return [];
     }
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqId = ++fetchRequestIdRef.current;
     setLoading(true);
     setError(null);
 
     try {
-      const res = await api.listDocuments(targetWsId, { includeArchived: true });
-      if (reqId !== fetchRequestIdRef.current) return [];
+      const res = await api.listDocuments(targetWsId, {
+        includeArchived: true,
+        signal: controller.signal,
+      });
+      if (reqId !== fetchRequestIdRef.current || !isMountedRef.current) return [];
       setDocuments(res.documents);
       return res.documents;
     } catch (err) {
-      if (reqId !== fetchRequestIdRef.current) return [];
+      if (reqId !== fetchRequestIdRef.current || !isMountedRef.current) return [];
+      if ((err as Error)?.name === 'AbortError') return [];
       const msg =
         err instanceof ApiError && err.status === 0
           ? 'Unable to connect to server. Offline.'
@@ -122,7 +144,7 @@ export function DocumentNavigationProvider({
       setDocuments((prev) => (prev.length > 0 ? prev : []));
       return [];
     } finally {
-      if (reqId === fetchRequestIdRef.current) {
+      if (reqId === fetchRequestIdRef.current && isMountedRef.current) {
         setLoading(false);
       }
     }
@@ -137,6 +159,9 @@ export function DocumentNavigationProvider({
     if (workspaceId) {
       refreshDocuments();
     } else {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       setLoading(false);
     }
   }, [workspaceId, refreshDocuments]);
@@ -161,7 +186,15 @@ export function DocumentNavigationProvider({
       }
     }
 
-    function handleWorkspaceRefresh() {
+    function handleWorkspaceRefresh(e: Event) {
+      const customEvt = e as CustomEvent<{ workspaceId?: string }>;
+      if (
+        customEvt.detail?.workspaceId &&
+        currentWorkspaceIdRef.current &&
+        customEvt.detail.workspaceId !== currentWorkspaceIdRef.current
+      ) {
+        return;
+      }
       refreshDocuments();
     }
 

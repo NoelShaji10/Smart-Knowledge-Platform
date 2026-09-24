@@ -274,8 +274,9 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
   // Move document state
   const [movingDoc, setMovingDoc] = useState<Document | null>(null);
 
-  // Restoring state tracking
+  // Restoring / Archiving state tracking
   const [restoringDocId, setRestoringDocId] = useState<string | null>(null);
+  const [archivingDocId, setArchivingDocId] = useState<string | null>(null);
 
   const canManage = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
   const canArchive = userRole === 'owner' || userRole === 'admin';
@@ -499,7 +500,8 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
   };
 
   const handleArchive = async (doc: Document) => {
-    if (!activeWorkspace || !canArchive) return;
+    if (!activeWorkspace || !canArchive || archivingDocId === doc.id) return;
+    setArchivingDocId(doc.id);
     try {
       const res = await api.archiveDocument(activeWorkspace.id, doc.id);
       if (nav) {
@@ -519,11 +521,13 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
       } else {
         showToast('Failed to archive document', 'error');
       }
+    } finally {
+      setArchivingDocId(null);
     }
   };
 
   const handleRestore = async (doc: Document) => {
-    if (!activeWorkspace || !canArchive) return;
+    if (!activeWorkspace || !canArchive || restoringDocId === doc.id) return;
     setRestoringDocId(doc.id);
     try {
       const res = await api.restoreDocument(activeWorkspace.id, doc.id);

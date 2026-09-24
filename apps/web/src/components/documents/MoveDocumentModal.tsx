@@ -119,6 +119,7 @@ export function MoveDocumentModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
 
     // If unchanged, simply close
     if (selectedParentId === docToMove.parent_id) {

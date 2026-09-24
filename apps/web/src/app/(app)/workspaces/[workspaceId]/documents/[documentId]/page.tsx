@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   api,
@@ -41,6 +41,21 @@ export default function DocumentPage({
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showHistory, setShowHistory] = useState(false);
   const [connectedUsers, setConnectedUsers] = useState<CollabUser[]>([]);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  const fetchRequestIdRef = useRef<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (workspaceId && activeWorkspace?.id !== workspaceId) {
@@ -50,13 +65,33 @@ export default function DocumentPage({
 
   const fetchDocument = useCallback(async () => {
     if (!workspaceId || !documentId) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const currentRequestId = ++fetchRequestIdRef.current;
+
     setLoading(true);
     setError(null);
+
     try {
-      const res = await api.getDocument(workspaceId, documentId);
+      const res = await api.getDocument(workspaceId, documentId, { signal: controller.signal });
+      if (currentRequestId !== fetchRequestIdRef.current || !isMountedRef.current) {
+        return;
+      }
       setDocument(res.document);
       setCapabilities(res.capabilities);
+      setError(null);
     } catch (err) {
+      if (currentRequestId !== fetchRequestIdRef.current || !isMountedRef.current) {
+        return;
+      }
+      if ((err as Error)?.name === 'AbortError') {
+        return;
+      }
       setDocument(null);
       if (err instanceof ApiError) {
         if (err.status === 403) {
@@ -74,12 +109,19 @@ export default function DocumentPage({
         setError('Failed to connect to server');
       }
     } finally {
-      setLoading(false);
+      if (currentRequestId === fetchRequestIdRef.current && isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [workspaceId, documentId]);
 
   useEffect(() => {
     fetchDocument();
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [fetchDocument]);
 
   const handleDocumentUpdated = (updated: Document) => {
@@ -161,7 +203,11 @@ export default function DocumentPage({
             <Button
               variant="secondary"
               size="sm"
+              disabled={isRestoring}
+              loading={isRestoring}
               onClick={async () => {
+                if (isRestoring) return;
+                setIsRestoring(true);
                 try {
                   const res = await api.restoreDocument(workspaceId, document.id);
                   handleDocumentUpdated(res.document);
@@ -171,6 +217,10 @@ export default function DocumentPage({
                     showToast('Access denied: You do not have permission to restore this document', 'error');
                   } else {
                     showToast('Failed to restore document', 'error');
+                  }
+                } finally {
+                  if (isMountedRef.current) {
+                    setIsRestoring(false);
                   }
                 }
               }}

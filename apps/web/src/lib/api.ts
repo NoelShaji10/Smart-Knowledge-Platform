@@ -159,6 +159,9 @@ export async function apiRequest<T>(
   try {
     response = await fetch(url, fetchOptions);
   } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      throw err;
+    }
     throw new ApiError('Network error or server unavailable', 0, err);
   }
 
@@ -281,8 +284,11 @@ export const api = {
 
   getWorkspaces: () => apiRequest<WorkspacesResponse>('/api/v1/workspaces', { method: 'GET' }),
 
-  getWorkspace: (workspaceId: string) =>
-    apiRequest<WorkspaceResponse>(`/api/v1/workspaces/${workspaceId}`, { method: 'GET' }),
+  getWorkspace: (workspaceId: string, options?: { signal?: AbortSignal }) =>
+    apiRequest<WorkspaceResponse>(`/api/v1/workspaces/${workspaceId}`, {
+      method: 'GET',
+      signal: options?.signal,
+    }),
 
   listWorkspaceMembers: (workspaceId: string) =>
     apiRequest<{
@@ -302,7 +308,10 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 
-  listDocuments: (workspaceId: string, params?: { parentId?: string | null; includeArchived?: boolean }) => {
+  listDocuments: (
+    workspaceId: string,
+    params?: { parentId?: string | null; includeArchived?: boolean; signal?: AbortSignal },
+  ) => {
     const query = new URLSearchParams();
     if (params?.parentId !== undefined) {
       query.set('parentId', params.parentId === null ? 'null' : params.parentId);
@@ -313,6 +322,7 @@ export const api = {
     const queryString = query.toString() ? `?${query.toString()}` : '';
     return apiRequest<{ documents: Document[] }>(`/api/v1/workspaces/${workspaceId}/documents${queryString}`, {
       method: 'GET',
+      signal: params?.signal,
     });
   },
 
@@ -322,9 +332,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  getDocument: (workspaceId: string, documentId: string) =>
+  getDocument: (workspaceId: string, documentId: string, options?: { signal?: AbortSignal }) =>
     apiRequest<DocumentResponse>(`/api/v1/workspaces/${workspaceId}/documents/${documentId}`, {
       method: 'GET',
+      signal: options?.signal,
     }),
 
   updateDocument: (workspaceId: string, documentId: string, data: { title?: string; contentText?: string }) =>

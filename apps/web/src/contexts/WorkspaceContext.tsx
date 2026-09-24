@@ -27,15 +27,23 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const loadRequestIdRef = useRef<number>(0);
+  const refreshRequestIdRef = useRef<number>(0);
 
   const refreshWorkspaces = useCallback(async (): Promise<Workspace[]> => {
+    const currentRefreshId = ++refreshRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await api.getWorkspaces();
+      if (currentRefreshId !== refreshRequestIdRef.current) {
+        return [];
+      }
       setWorkspaces(res.workspaces);
       return res.workspaces;
     } catch (err) {
+      if (currentRefreshId !== refreshRequestIdRef.current) {
+        return [];
+      }
       if (err instanceof ApiError) {
         if (err.status === 0) {
           setError('Unable to connect to the server. Please check your network connection.');
@@ -50,7 +58,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setWorkspaces([]);
       return [];
     } finally {
-      setLoading(false);
+      if (currentRefreshId === refreshRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 

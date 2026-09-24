@@ -40,6 +40,7 @@ export function DocumentHeader({
   const [actionLoading, setActionLoading] = useState(false);
 
   const handleCreateVersion = async () => {
+    if (actionLoading) return;
     setActionLoading(true);
     try {
       await api.createVersion(workspaceId, document.id);
@@ -56,6 +57,7 @@ export function DocumentHeader({
   };
 
   const handleArchiveToggle = async () => {
+    if (actionLoading) return;
     setActionLoading(true);
     const targetIsArchived = !document.is_archived;
     try {

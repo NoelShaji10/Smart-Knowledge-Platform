@@ -135,4 +135,84 @@ describe('Task 3: Cancellation, Timeouts, and Retries', () => {
 
     expect(callCount).toBe(1);
   });
+
+  describe('AbortSignal listener cleanup', () => {
+    it('removes external AbortSignal listener on successful request completion', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const controller = new AbortController();
+      const addSpy = vi.spyOn(controller.signal, 'addEventListener');
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+      await apiRequest('/api/v1/workspaces', { signal: controller.signal });
+
+      expect(addSpy).toHaveBeenCalledWith('abort', expect.any(Function), { once: true });
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+      // Listener added must be the exact same function removed
+      expect(addSpy.mock.calls[0][1]).toBe(removeSpy.mock.calls[0][1]);
+    });
+
+    it('removes external AbortSignal listener on request failure', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network drop'));
+
+      const controller = new AbortController();
+      const addSpy = vi.spyOn(controller.signal, 'addEventListener');
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+      await expect(apiRequest('/api/v1/workspaces', { signal: controller.signal })).rejects.toThrow();
+
+      expect(addSpy).toHaveBeenCalledWith('abort', expect.any(Function), { once: true });
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+      expect(addSpy.mock.calls[0][1]).toBe(removeSpy.mock.calls[0][1]);
+    });
+
+    it('removes external AbortSignal listener on request timeout', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation((_url, options) => {
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      });
+
+      const controller = new AbortController();
+      const addSpy = vi.spyOn(controller.signal, 'addEventListener');
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+      await expect(
+        apiRequest('/api/v1/workspaces', { signal: controller.signal, timeoutMs: 30 }),
+      ).rejects.toThrow();
+
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+    });
+
+    it('reused AbortSignal does not accumulate listeners across sequential requests', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const controller = new AbortController();
+      const addSpy = vi.spyOn(controller.signal, 'addEventListener');
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+      // Execute 3 requests sharing the same signal
+      await apiRequest('/api/v1/workspaces', { signal: controller.signal });
+      await apiRequest('/api/v1/workspaces', { signal: controller.signal });
+      await apiRequest('/api/v1/workspaces', { signal: controller.signal });
+
+      expect(addSpy).toHaveBeenCalledTimes(3);
+      expect(removeSpy).toHaveBeenCalledTimes(3);
+    });
+  });
 });
+

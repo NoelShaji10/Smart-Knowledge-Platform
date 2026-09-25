@@ -136,19 +136,46 @@ describe('Task 4: Mutation Failure and Rollback', () => {
     const titleEl = container.querySelector('[class*="docTitle"]');
     expect(titleEl?.textContent).toBe('Original Title');
 
-    // Trigger commit rename with new title
-    // When updateDocument fails, rename rollback must be called with Original Title
-    try {
-      await api.updateDocument('ws-1', 'doc-1', { title: 'Failed New Title' });
-    } catch {
-      // Rollback logic as executed in handleRenameCommit
-      mockNavContext.updateDocument({ ...dummyDoc, title: 'Original Title' });
-      mockShowToast('Failed to rename document', 'error');
-    }
+    // 1. Open the dropdown menu on the document item
+    const moreBtn = container.querySelector('button[aria-label="More actions"]') as HTMLButtonElement;
+    expect(moreBtn).toBeTruthy();
 
-    // Verify rollback called with Original Title and error toast shown
+    await act(async () => {
+      moreBtn.click();
+    });
+
+    // 2. Click the 'Rename' menu item
+    const renameBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Rename',
+    ) as HTMLButtonElement;
+    expect(renameBtn).toBeTruthy();
+
+    await act(async () => {
+      renameBtn.click();
+    });
+
+    // 3. Document item should now display the inline rename input
+    const renameInput = container.querySelector('input[aria-label="Rename document title"]') as HTMLInputElement;
+    expect(renameInput).toBeTruthy();
+    expect(renameInput.value).toBe('Original Title');
+
+    // 4. User types a new title
+    await changeInputValue(renameInput, 'Failed New Title');
+
+    // 5. Submit rename via Enter key
+    await act(async () => {
+      renameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // Verify api.updateDocument was called through DocumentTree's handleRenameCommit
+    expect(api.updateDocument).toHaveBeenCalledWith('ws-1', 'doc-1', {
+      title: 'Failed New Title',
+    });
+
+    // Verify handleRenameCommit caught the error and rolled back in navigation state
     expect(updateDocumentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Original Title' }),
+      expect.objectContaining({ id: 'doc-1', title: 'Original Title' }),
     );
     expect(mockShowToast).toHaveBeenCalledWith('Failed to rename document', 'error');
     expect(mockShowToast).not.toHaveBeenCalledWith('Document renamed', 'success');

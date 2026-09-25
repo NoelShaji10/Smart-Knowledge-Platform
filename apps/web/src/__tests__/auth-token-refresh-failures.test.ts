@@ -150,4 +150,37 @@ describe('Task 5: Authentication and Token Refresh Failures', () => {
 
     expect(getAccessToken()).toBeNull();
   });
+
+  it('api.logoutAll returns { ok: true, remoteRevoked: true } and clears accessToken when backend succeeds', async () => {
+    setAccessToken('valid-token');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const result = await api.logoutAll();
+
+    expect(result).toEqual({ ok: true, remoteRevoked: true });
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it('api.logoutAll returns { ok: true, remoteRevoked: false } and unconditionally clears accessToken when backend fails with 500', async () => {
+    setAccessToken('valid-token');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Database unreachable' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const result = await api.logoutAll();
+
+    // Client session must be cleared to prevent lock-in, but remoteRevoked must be false
+    expect(result).toEqual({ ok: true, remoteRevoked: false });
+    expect(getAccessToken()).toBeNull();
+  });
 });

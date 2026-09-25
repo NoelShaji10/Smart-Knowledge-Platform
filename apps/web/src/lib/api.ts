@@ -211,11 +211,15 @@ export async function apiRequest<T>(
   const controller = new AbortController();
   let timedOut = false;
 
+  const onExternalAbort = () => {
+    controller.abort();
+  };
+
   if (options.signal) {
     if (options.signal.aborted) {
       controller.abort();
     } else {
-      options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      options.signal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
 
@@ -248,6 +252,9 @@ export async function apiRequest<T>(
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
+    }
+    if (options.signal) {
+      options.signal.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -362,14 +369,19 @@ export const api = {
     }
   },
 
-  logoutAll: async () => {
+  logoutAll: async (): Promise<{ ok: boolean; remoteRevoked: boolean }> => {
+    let remoteRevoked = false;
     try {
       await apiRequest<{ ok: boolean }>('/api/v1/auth/logout-all', { method: 'POST' });
+      remoteRevoked = true;
     } catch {
-      // Ignore backend errors: client session must clear unconditionally
+      // Ignore backend errors: client session must clear unconditionally,
+      // but remoteRevoked is false so callers can detect if remote revocation was not confirmed
+      remoteRevoked = false;
     } finally {
       setAccessToken(null);
     }
+    return { ok: true, remoteRevoked };
   },
 
   getWorkspaces: () => apiRequest<WorkspacesResponse>('/api/v1/workspaces', { method: 'GET' }),

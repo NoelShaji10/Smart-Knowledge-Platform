@@ -693,10 +693,11 @@ describe('Phase 5 T4 Remediation Round 3: Adversarial Concurrency & Fencing Test
   // TEST 17 — Fencing supersession in createDocumentCheckpoint
   // =========================================================================
   it('TEST 17: Fencing supersession in createDocumentCheckpoint fails closed with StaleFencingTokenError', async () => {
-    await getOrCreateRoom(docId);
+    const room = await getOrCreateRoom(docId);
 
     // Advance DB fencing token to simulate another instance having taken over
-    dbDocRow.fencing_token = 999;
+    // Derive safely from current room / lock token state to avoid counter history assumptions
+    dbDocRow.fencing_token = (room.fencingToken || 10) + 100000;
 
     // createDocumentCheckpoint with older token must fail closed
     await expect(

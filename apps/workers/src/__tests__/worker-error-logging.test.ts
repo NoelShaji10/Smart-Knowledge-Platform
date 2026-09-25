@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { logger, sanitizeLogData } from '@knowledge/config';
+import { logger, sanitizeLogData, safeStringify } from '@knowledge/config';
 import { processWorkerJob } from '../main';
 
 describe('Tasks 7 & 8: Background Job Failure and Structured Logging', () => {
@@ -84,5 +84,72 @@ describe('Tasks 7 & 8: Background Job Failure and Structured Logging', () => {
     expect(sanitized.metadata.content_text).toBe('[TEXT_LEN_30]');
     expect(JSON.stringify(sanitized)).not.toContain('financial metrics');
     expect(JSON.stringify(sanitized)).not.toContain('payroll disclosures');
+  });
+
+  it('sanitizeLogData safely handles circular object references without crashing or infinite recursion', () => {
+    const circularObj: any = {
+      name: 'root',
+      child: {
+        name: 'child-node',
+      },
+    };
+    circularObj.child.parent = circularObj;
+    circularObj.self = circularObj;
+
+    const sanitized: any = sanitizeLogData(circularObj);
+
+    expect(sanitized.name).toBe('root');
+    expect(sanitized.child.name).toBe('child-node');
+    expect(sanitized.child.parent).toBe('[CIRCULAR]');
+    expect(sanitized.self).toBe('[CIRCULAR]');
+    expect(() => JSON.stringify(sanitized)).not.toThrow();
+  });
+
+  it('logger.error and safeStringify handle circular structures without throwing', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const circularMeta: any = { requestId: 'req-1' };
+    circularMeta.circularRef = circularMeta;
+
+    expect(() => {
+      logger.error('Test error with circular metadata', new Error('Something failed'), circularMeta);
+    }).not.toThrow();
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const loggedOutput = consoleSpy.mock.calls[0][0];
+    expect(loggedOutput).toContain('[CIRCULAR]');
+    expect(loggedOutput).toContain('Something failed');
+
+    consoleSpy.mockRestore();
+  });
+
+  it('redacts embedded JWTs, Bearer tokens, and connection passwords in error messages and stacks', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const embeddedJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const errorWithSecrets = new Error(
+      `Database connection to postgres://db_user:SuperSecretPassword123@postgres.internal:5432/knowledge failed with token ${embeddedJwt} and header Bearer secret_bearer_token`,
+    );
+
+    logger.error('Database connection error occurred', errorWithSecrets, {
+      endpoint: '/api/v1/workspaces',
+      connectionUri: 'postgres://app:AppSecretPass@pg.local:5432/db',
+    });
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const loggedOutput = consoleSpy.mock.calls[0][0];
+
+    // Must NOT contain raw secrets
+    expect(loggedOutput).not.toContain('SuperSecretPassword123');
+    expect(loggedOutput).not.toContain('AppSecretPass');
+    expect(loggedOutput).not.toContain(embeddedJwt);
+    expect(loggedOutput).not.toContain('secret_bearer_token');
+
+    // Must contain redaction markers
+    expect(loggedOutput).toContain('[REDACTED]');
+    expect(loggedOutput).toContain('[REDACTED_JWT]');
+    expect(loggedOutput).toContain('Bearer [REDACTED]');
+
+    consoleSpy.mockRestore();
   });
 });

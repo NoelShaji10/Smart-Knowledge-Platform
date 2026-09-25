@@ -152,4 +152,62 @@ describe('Tasks 7 & 8: Background Job Failure and Structured Logging', () => {
 
     consoleSpy.mockRestore();
   });
+
+  it('redacts Redis URIs with omitted username (redis://:password@host)', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const err = new Error('Connection refused to redis://:SecretPass123!@cache.internal:6379');
+    logger.error('Redis worker connection failure', err, {
+      redisUri: 'redis://:AnotherSecretPass@redis-node-1:6379/0',
+    });
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const output = consoleSpy.mock.calls[0][0];
+
+    expect(output).not.toContain('SecretPass123!');
+    expect(output).not.toContain('AnotherSecretPass');
+    expect(output).toContain('redis://:[REDACTED]@cache.internal:6379');
+    expect(output).toContain('redis://:[REDACTED]@redis-node-1:6379/0');
+
+    consoleSpy.mockRestore();
+  });
+
+  it('redacts Redis URIs with username and password (redis://user:password@host)', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const err = new Error('Auth failed on redis://default:SuperSecretPass456@cache.internal:6379');
+    logger.error('Redis auth error', err);
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const output = consoleSpy.mock.calls[0][0];
+
+    expect(output).not.toContain('SuperSecretPass456');
+    expect(output).toContain('redis://default:[REDACTED]@cache.internal:6379');
+
+    consoleSpy.mockRestore();
+  });
+
+  it('preserves Windows stack traces and file:/// URLs with pnpm package paths without corrupting diagnostic text', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const windowsStackTrace =
+      'Error: Query failed\n' +
+      '    at PostgresConnection.executeQuery (file:///C:/Users/Noel/Desktop/Knowledge%20Platform/node_modules/.pnpm/kysely@0.27.6/node_modules/kysely/dist/esm/dialect/postgres/postgres-driver.js:72:28)\n' +
+      '    at DefaultQueryExecutor.executeQuery (file:///C:/Users/Noel/Desktop/Knowledge%20Platform/node_modules/.pnpm/kysely@0.27.6/node_modules/kysely/dist/esm/query-executor/query-executor-base.js:34:16)';
+
+    const err = new Error('Query failed');
+    err.stack = windowsStackTrace;
+
+    logger.error('Database query execution error', err);
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const output = consoleSpy.mock.calls[0][0];
+
+    // File path must be completely preserved and NOT corrupted to file:///C:[REDACTED]@0.27.6/...
+    expect(output).toContain('file:///C:/Users/Noel/Desktop/Knowledge%20Platform/node_modules/.pnpm/kysely@0.27.6/');
+    expect(output).not.toContain('file:///C:[REDACTED]');
+
+    consoleSpy.mockRestore();
+  });
 });
+

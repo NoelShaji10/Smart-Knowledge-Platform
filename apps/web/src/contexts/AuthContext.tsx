@@ -11,7 +11,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<User>;
   register: (displayName: string, email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
-  logoutAll: () => Promise<void>;
+  logoutAll: () => Promise<{ ok: boolean; remoteRevoked: boolean }>;
   clearError: () => void;
 }
 
@@ -162,15 +162,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const handleLogoutAll = async () => {
+  const handleLogoutAll = async (): Promise<{ ok: boolean; remoteRevoked: boolean }> => {
+    let remoteRevoked = false;
     try {
-      await api.logoutAll();
+      const res = await api.logoutAll();
+      remoteRevoked = res?.remoteRevoked ?? false;
     } catch {
-      // Ignore logout-all errors
+      // Ignore logout-all errors: client session must clear unconditionally
+      remoteRevoked = false;
     } finally {
       setUser(null);
       setAccessToken(null);
     }
+    return { ok: true, remoteRevoked };
   };
 
   return (

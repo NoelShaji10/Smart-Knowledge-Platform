@@ -183,4 +183,16 @@ describe('Task 5: Authentication and Token Refresh Failures', () => {
     expect(result).toEqual({ ok: true, remoteRevoked: false });
     expect(getAccessToken()).toBeNull();
   });
+
+  it('api.logoutAll returns { ok: true, remoteRevoked: false } and unconditionally clears accessToken when network drops', async () => {
+    setAccessToken('valid-token');
+
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network offline or DNS failure'));
+
+    const result = await api.logoutAll();
+
+    expect(result).toEqual({ ok: true, remoteRevoked: false });
+    expect(getAccessToken()).toBeNull();
+  });
 });
+

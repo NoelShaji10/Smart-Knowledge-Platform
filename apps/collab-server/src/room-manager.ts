@@ -242,8 +242,7 @@ export function queueRoomPersistence(room: Room): Promise<void> {
           isStaleToken &&
           !isLockLost &&
           (room.isRestoring ||
-            (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen) ||
-            (room.fencingToken !== undefined && room.fencingToken > (seqToken || 0)));
+            (room.persistenceGeneration !== undefined && room.persistenceGeneration > persistenceGen));
 
         if (isPreRestoreSuperseded) {
           console.info(
@@ -557,8 +556,16 @@ function cloneXmlNode(node: any): Y.XmlElement | Y.XmlText {
  */
 export function applyHistoricalDocToRoomDoc(targetDoc: Y.Doc, sourceDoc: Y.Doc): void {
   // 1. Primary document fragment or text ('default')
-  const targetDef = getAuthoritativeDefaultType(targetDoc);
   const sourceDef = getAuthoritativeDefaultType(sourceDoc);
+  let targetDef = targetDoc.share.has('default') ? getAuthoritativeDefaultType(targetDoc) : null;
+
+  if (!targetDef) {
+    if (sourceDef instanceof Y.Text) {
+      targetDef = targetDoc.getText('default');
+    } else {
+      targetDef = targetDoc.getXmlFragment('default');
+    }
+  }
 
   if (targetDef instanceof Y.XmlFragment && sourceDef instanceof Y.Text) {
     // Target is rich text XmlFragment, source is plain Text: wrap in <p><text></p>

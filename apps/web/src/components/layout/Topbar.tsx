@@ -57,7 +57,12 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
       label: 'Logout All Devices',
       danger: true,
       onClick: async () => {
-        await logoutAll();
+        const res = await logoutAll();
+        if (res && res.remoteRevoked === false) {
+          showToast('Local session cleared, but remote devices could not be logged out', 'error');
+        } else {
+          showToast('Logged out from all devices', 'info');
+        }
         router.replace('/login');
       },
     },

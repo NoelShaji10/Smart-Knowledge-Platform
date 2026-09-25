@@ -14,6 +14,7 @@ import { DocumentTree } from '../components/documents/DocumentTree';
 import { Breadcrumbs } from '../components/documents/Breadcrumbs';
 import { Sidebar } from '../components/layout/Sidebar';
 import { AppShell } from '../components/layout/AppShell';
+import { Topbar } from '../components/layout/Topbar';
 
 // Configure act environment for React 18
 // @ts-expect-error global IS_REACT_ACT_ENVIRONMENT
@@ -21,11 +22,13 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockCurrentPath = '/workspaces/ws-1';
 const mockPush = vi.fn();
+const mockReplace = vi.fn();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mockCurrentPath,
   useRouter: () => ({
     push: mockPush,
+    replace: mockReplace,
   }),
 }));
 
@@ -847,4 +850,94 @@ describe('Phase 5 T6 — Workspace Navigation & Application Shell Tests', () => 
     );
     expect(newDocBtn).toBeUndefined();
   });
+
+  // =========================================================================
+  // 8. LOGOUT ALL FEEDBACK & TRUTHFUL REMOTE REVOCATION
+  // =========================================================================
+
+  it('18. Topbar logout-all displays info toast and redirects when remote revocation succeeds', async () => {
+    const mockLogoutAll = vi.fn().mockResolvedValue({ ok: true, remoteRevoked: true });
+    const authVal = { ...mockAuthValue, logoutAll: mockLogoutAll };
+
+    await renderComponent(
+      el(
+        AuthContext.Provider,
+        { value: authVal },
+        el(
+          WorkspaceProvider,
+          null,
+          el(Topbar),
+        ),
+      ),
+    );
+
+    // Click User menu dropdown
+    const userBtn = container.querySelector('button[aria-label="User account menu"]') as HTMLButtonElement;
+    expect(userBtn).toBeTruthy();
+
+    await act(async () => {
+      userBtn.click();
+    });
+
+    // Find and click 'Logout All Devices'
+    const logoutAllBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Logout All Devices'),
+    );
+    expect(logoutAllBtn).toBeTruthy();
+
+    await act(async () => {
+      logoutAllBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(mockLogoutAll).toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith('Logged out from all devices', 'info');
+    expect(mockReplace).toHaveBeenCalledWith('/login');
+  });
+
+  it('19. Topbar logout-all displays error toast and does not claim remote success when remote revocation fails', async () => {
+    const mockLogoutAll = vi.fn().mockResolvedValue({ ok: true, remoteRevoked: false });
+    const authVal = { ...mockAuthValue, logoutAll: mockLogoutAll };
+
+    await renderComponent(
+      el(
+        AuthContext.Provider,
+        { value: authVal },
+        el(
+          WorkspaceProvider,
+          null,
+          el(Topbar),
+        ),
+      ),
+    );
+
+    // Click User menu dropdown
+    const userBtn = container.querySelector('button[aria-label="User account menu"]') as HTMLButtonElement;
+    expect(userBtn).toBeTruthy();
+
+    await act(async () => {
+      userBtn.click();
+    });
+
+    // Find and click 'Logout All Devices'
+    const logoutAllBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Logout All Devices'),
+    );
+    expect(logoutAllBtn).toBeTruthy();
+
+    await act(async () => {
+      logoutAllBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(mockLogoutAll).toHaveBeenCalled();
+    // Invariant: Must warn the user that remote devices could not be logged out
+    expect(mockShowToast).toHaveBeenCalledWith(
+      'Local session cleared, but remote devices could not be logged out',
+      'error',
+    );
+    expect(mockShowToast).not.toHaveBeenCalledWith('Logged out from all devices', 'info');
+    expect(mockReplace).toHaveBeenCalledWith('/login');
+  });
 });
+

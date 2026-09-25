@@ -14,7 +14,8 @@ const EMBEDDED_JWT_REGEX = /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-
 // Matches Bearer tokens
 const BEARER_REGEX = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 // Matches connection URIs containing credentials, e.g. postgres://user:pass@host or redis://:pass@host
-const URI_PASSWORD_REGEX = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^:]+:)([^@\s]+)(@)/g;
+// Explicitly ignores file:// URLs and avoids crossing path boundaries.
+const URI_PASSWORD_REGEX = /(?<![a-zA-Z0-9])((?!file:\/\/)[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^@\s/:]*:)?)([^@\s/]+)(@)/gi;
 
 function sanitizeString(str: string): string {
   let result = str;

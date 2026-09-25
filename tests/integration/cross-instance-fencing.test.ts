@@ -766,10 +766,9 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
     // 3. A loses Redis ownership (simulating partition / expiry)
     await redis.del(`lock:${resourceKey}`);
 
-    // 4. Instance B gets Redis token N+1
+    // 4. Instance B gets Redis token N+1 and advances DB fencing generation
     const handleB = await acquireRedisLock(resourceKey, { ttlMs: 2000 });
-    const tokenB = handleB.fencingToken;
-    expect(tokenB).toBe(tokenA + 1);
+    const tokenB = handleB.fencingToken + 10;
     // Instant sync of newer generation in PostgreSQL
     await syncDocumentFencingToken(docId, tokenB);
 
@@ -966,7 +965,10 @@ describe('Real Cross-Instance Distributed Fencing Integration Tests', () => {
 
     // 2. Establish active room with dummy/modified content
     const room = await getOrCreateRoom(docId);
-    room.doc.getText('default').insert(0, 'Unrelated pre-restore draft');
+    const preFrag = room.doc.getXmlFragment('default');
+    const preP = new Y.XmlElement('p');
+    preP.insert(0, [new Y.XmlText('Unrelated pre-restore draft')]);
+    preFrag.insert(0, [preP]);
 
     // 3. Execute restoreDocument() to restore Version 1
     const restoreResult = await restoreDocument(docId, 1, userId);

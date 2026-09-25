@@ -71,7 +71,7 @@ export interface DocumentNavigationContextType {
   removeDocument: (docId: string) => void;
 }
 
-const DocumentNavigationContext = createContext<DocumentNavigationContextType | null>(null);
+export const DocumentNavigationContext = createContext<DocumentNavigationContextType | null>(null);
 
 export function DocumentNavigationProvider({
   workspaceId,

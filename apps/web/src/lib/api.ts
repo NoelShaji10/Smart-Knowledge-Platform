@@ -133,9 +133,66 @@ export async function refreshAccessTokenSingleFlight(): Promise<string> {
   return refreshPromise;
 }
 
+export interface ApiRequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+export function isAbortError(err: unknown): boolean {
+  return (err as Error)?.name === 'AbortError';
+}
+
+export function isRetryableError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return (
+      err.status === 0 ||
+      err.status === 408 ||
+      err.status === 429 ||
+      err.status === 502 ||
+      err.status === 503 ||
+      err.status === 504
+    );
+  }
+  return false;
+}
+
+export interface RetryOptions {
+  maxRetries?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  shouldRetry?: (err: unknown) => boolean;
+}
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions = {},
+): Promise<T> {
+  const maxRetries = options.maxRetries ?? 3;
+  const initialDelayMs = options.initialDelayMs ?? 300;
+  const maxDelayMs = options.maxDelayMs ?? 3000;
+  const shouldRetry = options.shouldRetry ?? isRetryableError;
+
+  let attempt = 0;
+  let delay = initialDelayMs;
+
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      if (isAbortError(err) || attempt > maxRetries || !shouldRetry(err)) {
+        throw err;
+      }
+      const jitter = 0.8 + Math.random() * 0.4;
+      const sleepMs = Math.min(maxDelayMs, Math.round(delay * jitter));
+      await new Promise((res) => setTimeout(res, sleepMs));
+      delay = Math.min(maxDelayMs, delay * 2);
+    }
+  }
+}
+
 export async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {},
+  options: ApiRequestOptions = {},
   isRetry = false,
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
@@ -149,20 +206,49 @@ export async function apiRequest<T>(
     headers.set('Authorization', `Bearer ${inMemoryAccessToken}`);
   }
 
+  // Setup abort controller and optional timeout
+  let timeoutId: NodeJS.Timeout | null = null;
+  const controller = new AbortController();
+  let timedOut = false;
+
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+
+  const timeoutMs = options.timeoutMs;
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
   const fetchOptions: RequestInit = {
     ...options,
     headers,
     credentials: 'include',
+    signal: controller.signal,
   };
 
   let response: Response;
   try {
     response = await fetch(url, fetchOptions);
   } catch (err) {
+    if (timedOut) {
+      throw new ApiError(`Request timed out after ${timeoutMs}ms`, 408);
+    }
     if ((err as Error)?.name === 'AbortError') {
       throw err;
     }
     throw new ApiError('Network error or server unavailable', 0, err);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 
   if (response.status === 401 && !isRetry && endpoint !== '/api/v1/auth/refresh' && endpoint !== '/api/v1/auth/login') {
@@ -269,6 +355,8 @@ export const api = {
   logout: async () => {
     try {
       await apiRequest<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' });
+    } catch {
+      // Ignore backend errors: client session must clear unconditionally
     } finally {
       setAccessToken(null);
     }
@@ -277,6 +365,8 @@ export const api = {
   logoutAll: async () => {
     try {
       await apiRequest<{ ok: boolean }>('/api/v1/auth/logout-all', { method: 'POST' });
+    } catch {
+      // Ignore backend errors: client session must clear unconditionally
     } finally {
       setAccessToken(null);
     }

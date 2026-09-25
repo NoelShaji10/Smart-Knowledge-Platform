@@ -356,6 +356,9 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
         return next;
       });
     } catch (err) {
+      if ((err as Error)?.name === 'AbortError') {
+        return;
+      }
       if (err instanceof ApiError && err.status === 0) {
         setLocalError('Unable to connect to server. Document tree offline.');
         showToast('Unable to connect to server. Document tree offline.', 'error');

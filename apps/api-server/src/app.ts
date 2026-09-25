@@ -21,6 +21,11 @@ export function createApiApp(): Express {
   app.use(documentRouter);
   app.use(wsTicketRouter);
 
+  // 404 handler for unmatched API routes
+  app.use((_req, res) => {
+    res.status(404).json({ error: 'Endpoint not found', code: 'NOT_FOUND' });
+  });
+
   app.use(errorHandler);
 
   return app;

@@ -126,13 +126,21 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   }
 
   if (error && !activeWorkspace) {
+    const isAccessDenied = error.includes('Access denied');
     return (
       <div className={styles.container}>
         <div className={styles.content}>
-          <h1 className={styles.heading}>Workspace Not Found</h1>
+          <h1 className={styles.heading}>{isAccessDenied ? 'Access Denied' : 'Workspace Error'}</h1>
           <p className={styles.description}>
-            The workspace you requested could not be loaded or you do not have permission to view it.
+            {error || 'The workspace you requested could not be loaded or you do not have permission to view it.'}
           </p>
+          {workspaceId && !isAccessDenied && (
+            <div style={{ marginTop: 'var(--space-4)' }}>
+              <Button variant="secondary" onClick={() => loadWorkspace(workspaceId)}>
+                Retry
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     );

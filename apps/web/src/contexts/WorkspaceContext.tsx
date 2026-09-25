@@ -47,6 +47,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (err instanceof ApiError) {
         if (err.status === 0) {
           setError('Unable to connect to the server. Please check your network connection.');
+        } else if (err.status === 401 || err.status === 403) {
+          setError('Access denied: Authentication or permissions revoked.');
+          // Security: Session/permission revoked -> MUST clear workspaces
+          setWorkspaces([]);
+          return [];
         } else if (err.status >= 500) {
           setError('Unable to load workspaces. Your data is safely stored in PostgreSQL. Please try again.');
         } else {
@@ -55,7 +60,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       } else {
         setError('Failed to load workspaces');
       }
-      setWorkspaces([]);
+      // Preserve existing loaded workspaces on transient network or server failures (stale data)
+      setWorkspaces((prev) => (prev.length > 0 ? prev : []));
       return [];
     } finally {
       if (currentRefreshId === refreshRequestIdRef.current) {
@@ -102,10 +108,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (err instanceof ApiError) {
         if (err.status === 0) {
           setError('Unable to connect to the server. Please check your network connection.');
-        } else if (err.status === 403) {
+        } else if (err.status === 401 || err.status === 403) {
           setError('Access denied: You do not have permission to access this workspace.');
+          setActiveWorkspace(null);
+          setUserRole(null);
+          return null;
         } else if (err.status === 404) {
           setError('Workspace not found.');
+          setActiveWorkspace(null);
+          setUserRole(null);
+          return null;
         } else if (err.status >= 500) {
           setError('Unable to load workspace details. Your data is safely stored in PostgreSQL. Please try again.');
         } else {
@@ -114,8 +126,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       } else {
         setError('Failed to load workspace details');
       }
-      setActiveWorkspace(null);
-      setUserRole(null);
+      // On non-security failure, preserve activeWorkspace if it was already loaded for this ID
+      setActiveWorkspace((prev) => (prev?.id === workspaceId ? prev : null));
       return null;
     } finally {
       if (currentRequestId === loadRequestIdRef.current) {

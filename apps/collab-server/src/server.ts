@@ -202,7 +202,8 @@ export async function verifyUserCanEditDocument(
       return { ok: true, status: 200 };
     });
   } catch (err: any) {
-    return { ok: false, status: 500, reason: err?.message || 'Internal error checking permissions' };
+    console.error('[collab-server] Error checking permissions:', err);
+    return { ok: false, status: 500, reason: 'Internal error checking permissions' };
   }
 }
 
@@ -291,8 +292,9 @@ export function createCollabServer() {
           // 2. Authorize user permissions independently
           const permResult = await verifyUserCanEditDocument(userId, documentId);
           if (!permResult.ok) {
+            const safeError = permResult.status === 500 ? 'Internal server error' : permResult.reason || 'Forbidden';
             res.writeHead(permResult.status, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: permResult.reason || 'Forbidden' }));
+            res.end(JSON.stringify({ error: safeError }));
             return;
           }
 
@@ -302,9 +304,13 @@ export function createCollabServer() {
           res.end(JSON.stringify(result));
         } catch (err: any) {
           console.error(`[collab-server] Error restoring document ${documentId}:`, err);
-          const status = err.message === 'Version not found' ? 404 : 500;
+          const isStale = err?.name === 'StaleFencingTokenError';
+          const isNotFound = err.message === 'Version not found';
+          const isLockLost = err?.name === 'LockLostError' || err?.message?.includes('Lock ownership lost');
+          const status = isNotFound ? 404 : isStale ? 409 : 500;
+          const safeMessage = isLockLost ? err.message : status === 500 ? 'Internal server error' : err.message || 'Restore error';
           res.writeHead(status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message || 'Restore error' }));
+          res.end(JSON.stringify({ error: safeMessage }));
         }
       });
       return;
@@ -361,11 +367,14 @@ export function createCollabServer() {
           res.end(JSON.stringify({ version: versionRow }));
         } catch (err: any) {
           console.error(`[collab-server] Error checkpointing document ${documentId}:`, err);
+          const isStale = err?.name === 'StaleFencingTokenError';
           const isNotFound = err.message === 'Document not found';
           const isArchived = err.message === 'Cannot create version checkpoint for an archived document';
-          const status = isNotFound ? 404 : isArchived ? 400 : 500;
+          const isLockLost = err?.name === 'LockLostError' || err?.message?.includes('Lock ownership lost');
+          const status = isNotFound ? 404 : isArchived ? 400 : isStale ? 409 : 500;
+          const safeMessage = isLockLost ? err.message : status === 500 ? 'Internal server error' : err.message || 'Checkpoint error';
           res.writeHead(status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message || 'Checkpoint error' }));
+          res.end(JSON.stringify({ error: safeMessage }));
         }
       });
       return;

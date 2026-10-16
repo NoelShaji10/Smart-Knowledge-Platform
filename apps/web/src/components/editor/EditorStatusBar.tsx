@@ -94,26 +94,47 @@ export function EditorStatusBar({
       return 'Disconnected';
     }
     if (collabStatus === 'error') return 'Connection Error';
+    if (!collabStatus && saveState) {
+      if (saveState === 'editing') return 'Changes pending';
+      if (saveState === 'saving') return 'Saving...';
+      if (saveState === 'error') return 'Save failed';
+      if (saveState === 'delayed') return 'Persistence delayed';
+      if (saveState === 'saved') return 'Saved';
+    }
     return null;
+  })();
+
+  const statusModifier = (() => {
+    if (readOnly) return styles.statusReadOnly;
+    if (collabStatus === 'error' || saveState === 'error') return styles.statusError;
+    if (collabStatus === 'connecting' || saveState === 'recovering') return styles.statusReconnecting;
+    if (collabStatus === 'disconnected') return styles.statusDisconnected;
+    if (saveState === 'saving') return styles.statusSaving;
+    if (saveState === 'editing') return styles.statusPending;
+    if (saveState === 'delayed') return styles.statusDelayed;
+    if (saveState === 'saved' || collabStatus === 'connected') return styles.statusSaved;
+    return '';
   })();
 
   return (
     <div className={styles.statusBar} role="status" aria-label="Document statistics">
-      <span className={styles.statItem}>
-        <strong>{stats.words.toLocaleString()}</strong> {stats.words === 1 ? 'word' : 'words'}
-      </span>
-      <span className={styles.dotSeparator}>•</span>
-      <span className={styles.statItem}>
-        <strong>{stats.characters.toLocaleString()}</strong> {stats.characters === 1 ? 'character' : 'characters'}
-      </span>
-      <span className={styles.dotSeparator}>•</span>
-      <span className={styles.statItem}>{readingTime}</span>
+      <div className={styles.metricsGroup}>
+        <span className={styles.statItem}>
+          <strong>{stats.words.toLocaleString()}</strong> {stats.words === 1 ? 'word' : 'words'}
+        </span>
+        <span className={styles.dotSeparator}>•</span>
+        <span className={styles.statItem}>
+          <strong>{stats.characters.toLocaleString()}</strong> {stats.characters === 1 ? 'character' : 'characters'}
+        </span>
+        <span className={styles.dotSeparator}>•</span>
+        <span className={styles.statItem}>{readingTime}</span>
+      </div>
 
       {collabStatusLabel && (
-        <>
-          <span className={styles.dotSeparator}>•</span>
-          <span className={styles.statItem}>{collabStatusLabel}</span>
-        </>
+        <div className={`${styles.statusBadge} ${statusModifier}`}>
+          <span className={styles.indicatorDot} aria-hidden="true" />
+          <span className={styles.statusLabel}>{collabStatusLabel}</span>
+        </div>
       )}
     </div>
   );

@@ -102,12 +102,34 @@ export default function RegisterPage() {
   };
 
   return (
-    <div>
-      <h1 className={styles.heading}>Create your account</h1>
-      <p className={styles.subtext}>Start collaborating with your team</p>
+    <div className={styles.container}>
+      <header className={styles.header}>
+        <h1 className={styles.heading}>Create your account</h1>
+        <p className={styles.subtext}>Start collaborating with your team</p>
+      </header>
 
       <form onSubmit={handleSubmit} className={styles.form} noValidate>
-        {generalError && <div className={styles.errorMessage}>{generalError}</div>}
+        {generalError && (
+          <div className={styles.errorMessage} role="alert">
+            <svg
+              className={styles.errorIcon}
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>{generalError}</span>
+          </div>
+        )}
 
         <Input
           label="Display Name"
@@ -139,7 +161,7 @@ export default function RegisterPage() {
           autoComplete="email"
         />
 
-        <div>
+        <div className={styles.passwordFieldGroup}>
           <Input
             label="Password"
             type="password"
@@ -158,9 +180,11 @@ export default function RegisterPage() {
           </p>
         </div>
 
-        <Button type="submit" loading={submitting} fullWidth>
-          Create Account
-        </Button>
+        <div className={styles.actionRow}>
+          <Button type="submit" loading={submitting} fullWidth>
+            Create Account
+          </Button>
+        </div>
       </form>
 
       <p className={styles.footerText}>

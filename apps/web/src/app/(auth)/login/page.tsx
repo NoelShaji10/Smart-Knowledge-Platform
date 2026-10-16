@@ -84,12 +84,34 @@ export default function LoginPage() {
   };
 
   return (
-    <div>
-      <h1 className={styles.heading}>Welcome back</h1>
-      <p className={styles.subtext}>Sign in to your workspace</p>
+    <div className={styles.container}>
+      <header className={styles.header}>
+        <h1 className={styles.heading}>Welcome back</h1>
+        <p className={styles.subtext}>Sign in to your workspace</p>
+      </header>
 
       <form onSubmit={handleSubmit} className={styles.form} noValidate>
-        {generalError && <div className={styles.errorMessage}>{generalError}</div>}
+        {generalError && (
+          <div className={styles.errorMessage} role="alert">
+            <svg
+              className={styles.errorIcon}
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>{generalError}</span>
+          </div>
+        )}
 
         <Input
           label="Email"
@@ -120,9 +142,11 @@ export default function LoginPage() {
           autoComplete="current-password"
         />
 
-        <Button type="submit" loading={submitting} fullWidth>
-          Sign In
-        </Button>
+        <div className={styles.actionRow}>
+          <Button type="submit" loading={submitting} fullWidth>
+            Sign In
+          </Button>
+        </div>
       </form>
 
       <p className={styles.footerText}>

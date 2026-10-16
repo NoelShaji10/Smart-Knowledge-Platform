@@ -3,15 +3,44 @@
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  padding: var(--space-6);
+  padding: var(--space-8) var(--space-4);
   background-color: var(--bg);
+  background-image: radial-gradient(
+    ellipse 80% 50% at 50% -10%,
+    oklch(0.55 0.17 255 / 0.05),
+    transparent 70%
+  );
+  box-sizing: border-box;
 }
 
 .authContainer {
   width: 100%;
-  max-width: 380px;
+  max-width: 420px;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.brandHeader {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-decoration: none;
+  user-select: none;
+}
+
+.logoBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.04);
 }
 
 .wordmark {
@@ -19,12 +48,37 @@
   font-size: var(--text-xl);
   font-weight: 600;
   color: var(--fg);
-  margin-bottom: var(--space-4);
+  letter-spacing: -0.01em;
 }
 
-.divider {
-  height: 1px;
-  background-color: var(--border);
+.authCard {
   width: 100%;
-  margin-bottom: var(--space-6);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: var(--space-8);
+  box-shadow:
+    0 1px 3px oklch(0 0 0 / 0.03),
+    0 6px 24px oklch(0 0 0 / 0.04);
+  box-sizing: border-box;
+}
+
+.authFooter {
+  font-size: var(--text-xs);
+  color: var(--fg-tertiary);
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 480px) {
+  .authWrapper {
+    padding: var(--space-4) var(--space-3);
+    align-items: flex-start;
+    padding-top: var(--space-8);
+  }
+
+  .authCard {
+    padding: var(--space-6) var(--space-4);
+    border-radius: 10px;
+  }
 }

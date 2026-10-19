@@ -38,6 +38,21 @@ export interface WorkspaceMembersTable {
   created_at: Generated<Date>;
 }
 
+export interface WorkspaceInvitationsTable {
+  id: Generated<string>;
+  workspace_id: string;
+  inviter_id: string;
+  invitee_email: string | null;
+  role: 'admin' | 'editor' | 'viewer';
+  token_hash: string;
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  expires_at: Date;
+  accepted_by: string | null;
+  accepted_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 export interface DocumentsTable {
   id: Generated<string>;
   workspace_id: string;
@@ -121,6 +136,7 @@ export interface Database {
   users: UsersTable;
   refresh_tokens: RefreshTokensTable;
   workspace_members: WorkspaceMembersTable;
+  workspace_invitations: WorkspaceInvitationsTable;
   documents: DocumentsTable;
   document_permissions: DocumentPermissionsTable;
   document_versions: DocumentVersionsTable;

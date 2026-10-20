@@ -23,6 +23,22 @@ export interface ApiErrorEnvelope {
   details?: unknown;
 }
 
+/**
+ * Redacts raw invitation tokens from URL paths to prevent sensitive token material
+ * from appearing in error logs, while preserving route structure and diagnostics.
+ * Matches resolution (/api/v1/invitations/:token) and acceptance (/api/v1/invitations/:token/accept)
+ * endpoints, including URLs with queries or hashes.
+ */
+export function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== 'string') {
+    return url;
+  }
+  return url.replace(
+    /^(\/?(?:api\/v\d+\/)?invitations\/)([^/?#]+)(\/accept)?(?=[/?#]|$)/i,
+    '$1[REDACTED]$3',
+  );
+}
+
 export function errorHandler(
   err: any,
   req: Request,
@@ -82,14 +98,26 @@ export function errorHandler(
 
   // 5. Server error (5xx or unhandled error)
   // Security invariant: never expose raw SQL, stack traces, schema details to client.
-  logger.error(`API Error ${req.method} ${req.originalUrl || req.url}`, err, {
-    method: req.method,
-    url: req.originalUrl || req.url,
-  });
+  const rawUrl = req.originalUrl || req.url || '';
+  const sanitizedUrl = sanitizeUrl(rawUrl);
+  const routeTemplate = req.route?.path ? `${req.baseUrl || ''}${req.route.path}` : undefined;
+  const requestId =
+    (req as any).id ||
+    (typeof req.headers['x-request-id'] === 'string' ? req.headers['x-request-id'] : undefined);
 
   const serverStatus = status && status >= 500 ? status : 500;
   const safeMessage =
     serverStatus === 503 ? 'Service unavailable' : 'Internal server error';
+
+  logger.error(`API Error ${req.method} ${sanitizedUrl}`, err, {
+    method: req.method,
+    url: sanitizedUrl,
+    route: routeTemplate,
+    requestId,
+    errorName: err?.name,
+    errorCode: err?.code,
+    status: serverStatus,
+  });
 
   res.status(serverStatus).json({
     error: safeMessage,

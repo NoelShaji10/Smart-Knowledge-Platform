@@ -6,6 +6,7 @@ import { authRouter } from './routes/auth';
 import { workspaceRouter } from './routes/workspaces';
 import { documentRouter } from './routes/documents';
 import { wsTicketRouter } from './routes/ws-ticket';
+import { invitationRouter } from './routes/invitations';
 import { errorHandler } from './middleware/error-handler';
 
 export function createApiApp(): Express {
@@ -20,6 +21,7 @@ export function createApiApp(): Express {
   app.use(workspaceRouter);
   app.use(documentRouter);
   app.use(wsTicketRouter);
+  app.use(invitationRouter);
 
   // 404 handler for unmatched API routes
   app.use((_req, res) => {

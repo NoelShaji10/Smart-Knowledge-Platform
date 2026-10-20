@@ -9,99 +9,104 @@ import { emitAuditEvent } from './audit';
 // ---------------------------------------------------------------------------
 
 export class InvitationError extends Error {
-  constructor(message: string) {
+  public status: number;
+  public code: string;
+
+  constructor(message: string, status = 400, code = 'INVITATION_ERROR') {
     super(message);
     this.name = 'InvitationError';
+    this.status = status;
+    this.code = code;
   }
 }
 
 export class InvitationNotFoundError extends InvitationError {
   constructor(message = 'Invitation not found') {
-    super(message);
+    super(message, 404, 'INVITATION_NOT_FOUND');
     this.name = 'InvitationNotFoundError';
   }
 }
 
 export class ExpiredInvitationError extends InvitationError {
   constructor(message = 'This invitation has expired') {
-    super(message);
+    super(message, 410, 'INVITATION_EXPIRED');
     this.name = 'ExpiredInvitationError';
   }
 }
 
 export class RevokedInvitationError extends InvitationError {
   constructor(message = 'This invitation has been revoked') {
-    super(message);
+    super(message, 410, 'INVITATION_REVOKED');
     this.name = 'RevokedInvitationError';
   }
 }
 
 export class AlreadyAcceptedError extends InvitationError {
   constructor(message = 'This invitation has already been accepted') {
-    super(message);
+    super(message, 409, 'INVITATION_ALREADY_ACCEPTED');
     this.name = 'AlreadyAcceptedError';
   }
 }
 
 export class EmailMismatchError extends InvitationError {
   constructor(message = 'This invitation was sent to a different email address') {
-    super(message);
+    super(message, 403, 'EMAIL_MISMATCH');
     this.name = 'EmailMismatchError';
   }
 }
 
 export class UnverifiedEmailError extends InvitationError {
   constructor(message = 'Account email must be verified to accept an email-bound invitation') {
-    super(message);
+    super(message, 403, 'EMAIL_NOT_VERIFIED');
     this.name = 'UnverifiedEmailError';
   }
 }
 
 export class UserAlreadyMemberError extends InvitationError {
   constructor(message = 'User is already a member of this workspace') {
-    super(message);
+    super(message, 409, 'USER_ALREADY_MEMBER');
     this.name = 'UserAlreadyMemberError';
   }
 }
 
 export class UnauthorizedInvitationError extends InvitationError {
   constructor(message = 'Unauthorized to perform this invitation action') {
-    super(message);
+    super(message, 403, 'UNAUTHORIZED');
     this.name = 'UnauthorizedInvitationError';
   }
 }
 
 export class InvalidInvitationRoleError extends InvitationError {
   constructor(message = 'Invalid invitation role requested') {
-    super(message);
+    super(message, 400, 'INVALID_ROLE');
     this.name = 'InvalidInvitationRoleError';
   }
 }
 
 export class InvalidInvitationEmailError extends InvitationError {
   constructor(message = 'Invalid invitation email format') {
-    super(message);
+    super(message, 400, 'INVALID_EMAIL');
     this.name = 'InvalidInvitationEmailError';
   }
 }
 
 export class AdminPrivilegeEscalationError extends InvitationError {
   constructor(message = 'Only workspace owners can invite or manage admin memberships') {
-    super(message);
+    super(message, 403, 'ADMIN_PRIVILEGE_ESCALATION');
     this.name = 'AdminPrivilegeEscalationError';
   }
 }
 
 export class CannotRevokeAcceptedInvitationError extends InvitationError {
   constructor(message = 'Cannot revoke an invitation that has already been accepted') {
-    super(message);
+    super(message, 409, 'CANNOT_REVOKE_ACCEPTED');
     this.name = 'CannotRevokeAcceptedInvitationError';
   }
 }
 
 export class CannotResendAcceptedInvitationError extends InvitationError {
   constructor(message = 'Cannot resend an invitation that has already been accepted') {
-    super(message);
+    super(message, 409, 'CANNOT_RESEND_ACCEPTED');
     this.name = 'CannotResendAcceptedInvitationError';
   }
 }

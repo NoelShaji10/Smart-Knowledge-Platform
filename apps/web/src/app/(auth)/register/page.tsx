@@ -1,16 +1,21 @@
 'use client';
 
-import React, { useState, FormEvent } from 'react';
+import React, { useState, FormEvent, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { Button, Input } from '@/components/ui';
 import { ApiError } from '@/lib/api';
+import { getSafeReturnUrl } from '@/lib/safeRedirect';
 import styles from './page.module.css';
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const rawReturnUrl = searchParams.get('returnUrl');
+  const safeReturnUrl = getSafeReturnUrl(rawReturnUrl);
+
   const { register } = useAuth();
   const { refreshWorkspaces } = useWorkspace();
 
@@ -79,6 +84,13 @@ export default function RegisterPage() {
 
     try {
       await register(displayName.trim(), email.trim(), password);
+
+      // If a safe return destination was requested, navigate directly there
+      if (safeReturnUrl) {
+        router.replace(safeReturnUrl);
+        return;
+      }
+
       const workspaces = await refreshWorkspaces();
 
       if (workspaces.length === 0) {
@@ -100,6 +112,10 @@ export default function RegisterPage() {
       setSubmitting(false);
     }
   };
+
+  const loginHref = safeReturnUrl
+    ? `/login?returnUrl=${encodeURIComponent(safeReturnUrl)}`
+    : '/login';
 
   return (
     <div className={styles.container}>
@@ -189,10 +205,18 @@ export default function RegisterPage() {
 
       <p className={styles.footerText}>
         Already have an account?{' '}
-        <Link href="/login" className={styles.footerLink}>
+        <Link href={loginHref} className={styles.footerLink}>
           Sign in
         </Link>
       </p>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className={styles.container} />}>
+      <RegisterForm />
+    </Suspense>
   );
 }

@@ -72,6 +72,21 @@ export interface ResendInvitationResponse {
   rawToken: string;
 }
 
+export interface PublicInvitationDetails {
+  workspaceName: string;
+  inviterName: string;
+  role: 'admin' | 'editor' | 'viewer';
+  expiresAt: string;
+  isEmailBound: boolean;
+  maskedEmail: string | null;
+}
+
+export interface AcceptInvitationResponse {
+  status: 'accepted' | 'already_member';
+  workspaceId: string;
+  role: 'owner' | 'admin' | 'editor' | 'viewer';
+}
+
 export class ApiError extends Error {
   status: number;
   data?: unknown;
@@ -478,6 +493,23 @@ export const api = {
   resendWorkspaceInvitation: (workspaceId: string, invitationId: string) =>
     apiRequest<ResendInvitationResponse>(
       `/api/v1/workspaces/${workspaceId}/invitations/${invitationId}/resend`,
+      {
+        method: 'POST',
+      },
+    ),
+
+  resolveInvitation: (token: string, options?: { signal?: AbortSignal }) =>
+    apiRequest<{ invitation: PublicInvitationDetails }>(
+      `/api/v1/invitations/${encodeURIComponent(token)}`,
+      {
+        method: 'GET',
+        signal: options?.signal,
+      },
+    ),
+
+  acceptWorkspaceInvitation: (token: string) =>
+    apiRequest<AcceptInvitationResponse>(
+      `/api/v1/invitations/${encodeURIComponent(token)}/accept`,
       {
         method: 'POST',
       },

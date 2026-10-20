@@ -1,16 +1,21 @@
 'use client';
 
-import React, { useState, FormEvent } from 'react';
+import React, { useState, FormEvent, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { Button, Input } from '@/components/ui';
 import { ApiError } from '@/lib/api';
+import { getSafeReturnUrl } from '@/lib/safeRedirect';
 import styles from './page.module.css';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const rawReturnUrl = searchParams.get('returnUrl');
+  const safeReturnUrl = getSafeReturnUrl(rawReturnUrl);
+
   const { login } = useAuth();
   const { refreshWorkspaces } = useWorkspace();
 
@@ -59,6 +64,14 @@ export default function LoginPage() {
 
     try {
       await login(email, password);
+
+      // If a safe return destination was requested (e.g. an invitation route),
+      // navigate directly there without auto-accepting.
+      if (safeReturnUrl) {
+        router.replace(safeReturnUrl);
+        return;
+      }
+
       const workspaces = await refreshWorkspaces();
 
       if (workspaces.length === 0) {
@@ -82,6 +95,10 @@ export default function LoginPage() {
       setSubmitting(false);
     }
   };
+
+  const registerHref = safeReturnUrl
+    ? `/register?returnUrl=${encodeURIComponent(safeReturnUrl)}`
+    : '/register';
 
   return (
     <div className={styles.container}>
@@ -151,10 +168,18 @@ export default function LoginPage() {
 
       <p className={styles.footerText}>
         Don&apos;t have an account?{' '}
-        <Link href="/register" className={styles.footerLink}>
+        <Link href={registerHref} className={styles.footerLink}>
           Sign up
         </Link>
       </p>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className={styles.container} />}>
+      <LoginForm />
+    </Suspense>
   );
 }

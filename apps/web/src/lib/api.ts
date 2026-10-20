@@ -40,6 +40,38 @@ export interface WorkspaceResponse {
   userRole: 'owner' | 'admin' | 'editor' | 'viewer';
 }
 
+export interface WorkspaceMemberListItem {
+  id: string;
+  email: string;
+  display_name: string;
+  avatar_url: string | null;
+  role: 'owner' | 'admin' | 'editor' | 'viewer';
+  created_at: string;
+}
+
+export interface WorkspaceInvitation {
+  id: string;
+  workspace_id: string;
+  inviter_id: string;
+  invitee_email: string | null;
+  role: 'admin' | 'editor' | 'viewer';
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  expires_at: string;
+  created_at: string;
+  accepted_at?: string | null;
+  accepted_by?: string | null;
+}
+
+export interface CreateInvitationResponse {
+  invitation: WorkspaceInvitation;
+  rawToken: string;
+}
+
+export interface ResendInvitationResponse {
+  invitation: WorkspaceInvitation;
+  rawToken: string;
+}
+
 export class ApiError extends Error {
   status: number;
   data?: unknown;
@@ -394,15 +426,62 @@ export const api = {
 
   listWorkspaceMembers: (workspaceId: string) =>
     apiRequest<{
-      members: Array<{
-        id: string;
-        email: string;
-        display_name: string;
-        avatar_url: string | null;
-        role: 'owner' | 'admin' | 'editor' | 'viewer';
-        created_at: string;
-      }>;
+      members: WorkspaceMemberListItem[];
     }>(`/api/v1/workspaces/${workspaceId}/members`, { method: 'GET' }),
+
+  getWorkspaceMembers: (workspaceId: string, options?: { signal?: AbortSignal }) =>
+    apiRequest<{
+      members: WorkspaceMemberListItem[];
+    }>(`/api/v1/workspaces/${workspaceId}/members`, { method: 'GET', signal: options?.signal }),
+
+  changeWorkspaceMemberRole: (
+    workspaceId: string,
+    userId: string,
+    role: 'admin' | 'editor' | 'viewer',
+  ) =>
+    apiRequest<{ member: { userId: string; role: 'admin' | 'editor' | 'viewer' } }>(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ role }),
+      },
+    ),
+
+  removeWorkspaceMember: (workspaceId: string, userId: string) =>
+    apiRequest<{ ok: boolean }>(`/api/v1/workspaces/${workspaceId}/members/${userId}`, {
+      method: 'DELETE',
+    }),
+
+  listWorkspaceInvitations: (workspaceId: string, options?: { signal?: AbortSignal }) =>
+    apiRequest<{ invitations: WorkspaceInvitation[] }>(`/api/v1/workspaces/${workspaceId}/invitations`, {
+      method: 'GET',
+      signal: options?.signal,
+    }),
+
+  createWorkspaceInvitation: (
+    workspaceId: string,
+    data: { role: 'admin' | 'editor' | 'viewer'; email?: string | null; expiresInDays?: number },
+  ) =>
+    apiRequest<CreateInvitationResponse>(`/api/v1/workspaces/${workspaceId}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  revokeWorkspaceInvitation: (workspaceId: string, invitationId: string) =>
+    apiRequest<{ ok: boolean; message: string }>(
+      `/api/v1/workspaces/${workspaceId}/invitations/${invitationId}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+
+  resendWorkspaceInvitation: (workspaceId: string, invitationId: string) =>
+    apiRequest<ResendInvitationResponse>(
+      `/api/v1/workspaces/${workspaceId}/invitations/${invitationId}/resend`,
+      {
+        method: 'POST',
+      },
+    ),
 
   createWorkspace: (name: string) =>
     apiRequest<{ workspace: Workspace }>('/api/v1/workspaces', {

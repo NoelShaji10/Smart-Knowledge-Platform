@@ -33,3 +33,26 @@
   background-color: var(--surface-alt);
   color: var(--fg-tertiary);
 }
+
+.pending,
+.warning {
+  background-color: var(--warning-subtle);
+  color: var(--fg);
+}
+
+.accepted,
+.success {
+  background-color: var(--success-subtle);
+  color: var(--success);
+}
+
+.revoked,
+.danger {
+  background-color: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.expired {
+  background-color: var(--surface-alt);
+  color: var(--fg-tertiary);
+}

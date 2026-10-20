@@ -5,21 +5,24 @@ import styles from './Badge.module.css';
 
 export interface BadgeProps {
   children: ReactNode;
-  variant?: 'default' | 'owner' | 'admin' | 'editor' | 'viewer';
+  variant?:
+    | 'default'
+    | 'owner'
+    | 'admin'
+    | 'editor'
+    | 'viewer'
+    | 'pending'
+    | 'accepted'
+    | 'expired'
+    | 'revoked'
+    | 'success'
+    | 'warning'
+    | 'danger';
   className?: string;
 }
 
 export function Badge({ children, variant = 'default', className = '' }: BadgeProps) {
-  const variantClass =
-    variant === 'owner'
-      ? styles.owner
-      : variant === 'admin'
-        ? styles.admin
-        : variant === 'editor'
-          ? styles.editor
-          : variant === 'viewer'
-            ? styles.viewer
-            : '';
+  const variantClass = styles[variant] || '';
 
   return (
     <span className={`${styles.badge} ${variantClass} ${className}`.trim()}>

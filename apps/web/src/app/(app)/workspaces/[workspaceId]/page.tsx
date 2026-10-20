@@ -222,8 +222,13 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
           )}
         </div>
 
-        {canCreate && (
-          <div className={styles.actions}>
+        <div className={styles.actions}>
+          <Link href={`/workspaces/${activeWorkspace?.id || workspaceId}/members`}>
+            <Button variant="secondary" aria-label="Manage Members">
+              Manage Members
+            </Button>
+          </Link>
+          {canCreate && (
             <Button
               variant="primary"
               onClick={() => setIsCreateModalOpen(true)}
@@ -231,8 +236,8 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
             >
               + New Document
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Main Content: Grid or Empty State */}

@@ -9,9 +9,11 @@ import styles from './Topbar.module.css';
 
 export interface TopbarProps {
   onToggleSidebar?: () => void;
+  isSidebarOpen?: boolean;
+  hamburgerRef?: React.Ref<HTMLButtonElement>;
 }
 
-export function Topbar({ onToggleSidebar }: TopbarProps) {
+export function Topbar({ onToggleSidebar, isSidebarOpen, hamburgerRef }: TopbarProps) {
   const router = useRouter();
   const { user, logout, logoutAll } = useAuth();
   const { workspaces, activeWorkspace, userRole } = useWorkspace();
@@ -72,10 +74,13 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
     <header className={styles.topbar}>
       <div className={styles.leftSection}>
         <button
+          ref={hamburgerRef}
           type="button"
           className={styles.hamburgerBtn}
           onClick={onToggleSidebar}
           aria-label="Toggle navigation menu"
+          aria-expanded={isSidebarOpen ?? false}
+          aria-controls="sidebar-navigation"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="3" y1="6" x2="21" y2="6" />
@@ -85,6 +90,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
         </button>
 
         <Dropdown
+          ariaLabel="Switch workspace"
           trigger={
             <span className={styles.workspaceTrigger}>
               <span>{activeWorkspace?.name || 'Workspace'}</span>

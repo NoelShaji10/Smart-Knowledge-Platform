@@ -177,7 +177,10 @@ describe('Task 4: Mutation Failure and Rollback', () => {
     expect(updateDocumentMock).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'doc-1', title: 'Original Title' }),
     );
-    expect(mockShowToast).toHaveBeenCalledWith('Failed to rename document', 'error');
+    expect(mockShowToast).toHaveBeenCalledWith(
+      'Access denied: You do not have permission to rename this document',
+      'error',
+    );
     expect(mockShowToast).not.toHaveBeenCalledWith('Document renamed', 'success');
   });
 

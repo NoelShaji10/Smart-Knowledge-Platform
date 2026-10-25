@@ -8,6 +8,7 @@ import styles from './EditorToolbar.module.css';
 export interface EditorToolbarProps {
   editor: Editor | null;
   disabled?: boolean;
+  readOnly?: boolean;
   isFocusMode?: boolean;
   onToggleFocusMode?: () => void;
 }
@@ -22,6 +23,7 @@ export function getModifierKeyLabel(): string {
 export function EditorToolbar({
   editor,
   disabled = false,
+  readOnly = false,
   isFocusMode = false,
   onToggleFocusMode,
 }: EditorToolbarProps) {
@@ -41,7 +43,7 @@ export function EditorToolbar({
   // Handle keyboard shortcut event (Mod-k) for toggling link popover
   useEffect(() => {
     const handleToggleLinkPopover = () => {
-      if (!disabled && editor && editor.isEditable) {
+      if (!disabled && !readOnly && editor && editor.isEditable) {
         setShowLinkPopover((prev) => !prev);
       }
     };
@@ -50,11 +52,54 @@ export function EditorToolbar({
     return () => {
       window.removeEventListener('editor:toggle-link-popover', handleToggleLinkPopover);
     };
-  }, [disabled, editor]);
+  }, [disabled, readOnly, editor]);
 
   if (!editor) return null;
 
   const modKey = getModifierKeyLabel();
+
+  if (readOnly) {
+    return (
+      <div className={styles.readOnlyToolbar} role="toolbar" aria-label="Viewer toolbar">
+        <span className={styles.readOnlyIndicator}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span>Read-only mode</span>
+        </span>
+
+        {onToggleFocusMode && (
+          <button
+            type="button"
+            className={`${styles.btn} ${isFocusMode ? styles.btnActive : ''}`}
+            onClick={onToggleFocusMode}
+            aria-label={isFocusMode ? 'Exit focus mode' : 'Enter focus mode'}
+            aria-pressed={isFocusMode}
+            title={`${isFocusMode ? 'Exit Focus Mode' : 'Focus Mode'} (${modKey}+Shift+F)`}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {isFocusMode ? (
+                <>
+                  <polyline points="4 14 10 14 10 20" />
+                  <polyline points="20 10 14 10 14 4" />
+                  <line x1="14" y1="10" x2="21" y2="3" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </>
+              ) : (
+                <>
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </>
+              )}
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const currentBlockValue = (() => {
     if (editor.isActive('heading', { level: 1 })) return 'h1';

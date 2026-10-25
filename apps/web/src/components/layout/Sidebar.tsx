@@ -11,20 +11,32 @@ import styles from './Sidebar.module.css';
 
 export interface SidebarProps {
   onClose?: () => void;
+  onDismiss?: () => void;
 }
 
-export function Sidebar({ onClose }: SidebarProps = {}) {
+export function Sidebar({ onClose, onDismiss }: SidebarProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const { user } = useAuth();
   const { workspaces, activeWorkspace, userRole } = useWorkspace();
 
-  const isDocumentsActive =
-    activeWorkspace &&
-    (pathname === `/workspaces/${activeWorkspace.id}` || pathname.includes('/documents')) &&
-    !pathname.includes('/members');
-  const isMembersActive =
-    activeWorkspace && pathname.includes(`/workspaces/${activeWorkspace.id}/members`);
+  // Extract workspaceId from URL path if present
+  // Route /workspaces/new is the workspace-creation route, not a workspace ID.
+  const isCreateWorkspaceRoute = pathname === '/workspaces/new' || pathname?.startsWith('/workspaces/new/');
+  const match = pathname?.match(/\/workspaces\/([a-zA-Z0-9-]+)/);
+  const rawId = match ? match[1] : null;
+  const routeWorkspaceId = rawId && rawId !== 'new' ? rawId : null;
+  const effectiveWorkspaceId = isCreateWorkspaceRoute ? null : (routeWorkspaceId || activeWorkspace?.id || null);
+
+  const isDocumentsActive = Boolean(
+    effectiveWorkspaceId &&
+      (pathname === `/workspaces/${effectiveWorkspaceId}` ||
+        (pathname?.includes('/documents') && pathname?.includes(`/workspaces/${effectiveWorkspaceId}`))) &&
+      !pathname?.includes('/members'),
+  );
+  const isMembersActive = Boolean(
+    effectiveWorkspaceId && pathname?.includes(`/workspaces/${effectiveWorkspaceId}/members`),
+  );
 
   const workspaceMenuItems: DropdownItem[] = [
     ...workspaces.map((ws) => ({
@@ -48,13 +60,14 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
   ];
 
   return (
-    <aside className={styles.sidebar} aria-label="Sidebar Navigation">
+    <aside className={styles.sidebar} id="sidebar-navigation" aria-label="Sidebar Navigation">
       <div className={styles.workspaceHeader}>
         <div className={styles.headerTopRow}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Dropdown
+              ariaLabel="Switch workspace"
               trigger={
-                <span className={styles.workspaceSwitchBtn} role="button" aria-label="Switch workspace">
+                <span className={styles.workspaceSwitchBtn}>
                   <div className={styles.workspaceInfo}>
                     <div className={styles.workspaceName}>{activeWorkspace?.name || 'Workspace'}</div>
                     {activeWorkspace?.slug && <div className={styles.workspaceSlug}>{activeWorkspace.slug}</div>}
@@ -68,11 +81,11 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
             />
           </div>
 
-          {onClose && (
+          {(onDismiss || onClose) && (
             <button
               type="button"
               className={styles.mobileCloseBtn}
-              onClick={onClose}
+              onClick={() => (onDismiss ? onDismiss() : onClose?.())}
               aria-label="Close navigation sidebar"
             >
               &times;
@@ -83,7 +96,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
 
       <nav className={styles.navSection} aria-label="Primary Navigation">
         <Link
-          href={activeWorkspace ? `/workspaces/${activeWorkspace.id}` : '#'}
+          href={effectiveWorkspaceId ? `/workspaces/${effectiveWorkspaceId}` : '#'}
           className={`${styles.navItem} ${isDocumentsActive ? styles.navItemActive : ''}`}
           aria-current={isDocumentsActive ? 'page' : undefined}
           onClick={() => onClose?.()}
@@ -98,7 +111,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
           <span>Documents</span>
         </Link>
         <Link
-          href={activeWorkspace ? `/workspaces/${activeWorkspace.id}/members` : '#'}
+          href={effectiveWorkspaceId ? `/workspaces/${effectiveWorkspaceId}/members` : '#'}
           className={`${styles.navItem} ${isMembersActive ? styles.navItemActive : ''}`}
           aria-current={isMembersActive ? 'page' : undefined}
           onClick={() => onClose?.()}

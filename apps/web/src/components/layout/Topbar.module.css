@@ -136,3 +136,17 @@
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
 }
+
+.hamburgerBtn:focus-visible,
+.searchPill:focus-visible,
+.workspaceTrigger:focus-visible,
+.userMenuTrigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .centerSection {
+    display: none;
+  }
+}

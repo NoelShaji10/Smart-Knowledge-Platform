@@ -145,7 +145,11 @@ export function DocumentEditor({
 
           pendingTitleToSaveRef.current = null;
           setCollabTitleSaveState('error');
-          showToast('Failed to save document title', 'error');
+          if (err instanceof ApiError && err.status === 403) {
+            showToast('Access denied: You do not have permission to edit this document title', 'error');
+          } else {
+            showToast('Failed to save document title', 'error');
+          }
         } finally {
           inFlightTitlePromiseRef.current = null;
         }
@@ -510,6 +514,7 @@ export function DocumentEditor({
         <EditorToolbar
           editor={editor}
           disabled={readOnly || (isCollaborative && collabStatus !== 'connected')}
+          readOnly={readOnly}
           isFocusMode={isFocusMode}
           onToggleFocusMode={toggleFocusMode}
         />

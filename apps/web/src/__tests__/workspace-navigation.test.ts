@@ -15,6 +15,8 @@ import { Breadcrumbs } from '../components/documents/Breadcrumbs';
 import { Sidebar } from '../components/layout/Sidebar';
 import { AppShell } from '../components/layout/AppShell';
 import { Topbar } from '../components/layout/Topbar';
+import WorkspacePage from '../app/(app)/workspaces/[workspaceId]/page';
+import WorkspaceMembersPage from '../app/(app)/workspaces/[workspaceId]/members/page';
 
 // Configure act environment for React 18
 // @ts-expect-error global IS_REACT_ACT_ENVIRONMENT
@@ -938,6 +940,293 @@ describe('Phase 5 T6 — Workspace Navigation & Application Shell Tests', () => 
     );
     expect(mockShowToast).not.toHaveBeenCalledWith('Logged out from all devices', 'info');
     expect(mockReplace).toHaveBeenCalledWith('/login');
+  });
+
+  // =========================================================================
+  // 6. TASK 6 SHELL & NAVIGATION COMPLETION TESTS
+  // =========================================================================
+
+  it('20. Topbar mobile hamburger button and workspace switch expose accessible attributes and valid semantics', async () => {
+    // When isSidebarOpen is false
+    await renderWithContext(el(Topbar, { isSidebarOpen: false }));
+
+    const hamburger = container.querySelector('button[aria-label="Toggle navigation menu"]') as HTMLButtonElement;
+    expect(hamburger).toBeTruthy();
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+    expect(hamburger.getAttribute('aria-controls')).toBe('sidebar-navigation');
+
+    const wsDropdownBtn = container.querySelector('button[aria-label="Switch workspace"]') as HTMLButtonElement;
+    expect(wsDropdownBtn).toBeTruthy();
+    // Invariant: Native button MUST NOT contain a nested role="button" element
+    expect(wsDropdownBtn.querySelector('[role="button"]')).toBeNull();
+
+    // Verify Sidebar workspace switch button also has no nested role="button"
+    await renderWithContext(el(Sidebar));
+    const sidebarWsBtn = container.querySelector('aside button[aria-label="Switch workspace"]') as HTMLButtonElement;
+    expect(sidebarWsBtn).toBeTruthy();
+    expect(sidebarWsBtn.querySelector('[role="button"]')).toBeNull();
+
+    // When isSidebarOpen is true
+    await renderWithContext(el(Topbar, { isSidebarOpen: true }));
+    const hamburgerOpen = container.querySelector('button[aria-label="Toggle navigation menu"]') as HTMLButtonElement;
+    expect(hamburgerOpen.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('21. Sidebar derives effectiveWorkspaceId from route path with precedence over stale activeWorkspace', async () => {
+    mockCurrentPath = '/workspaces/ws-fallback/documents/doc-123';
+
+    // 1. Context with activeWorkspace null
+    await renderWithContext(el(Sidebar), { activeWorkspace: null });
+
+    const aside = container.querySelector('aside#sidebar-navigation');
+    expect(aside).toBeTruthy();
+
+    const links = Array.from(container.querySelectorAll('a'));
+    const docLink = links.find((a) => a.textContent?.includes('Documents'));
+    const membersLink = links.find((a) => a.textContent?.includes('Members'));
+
+    expect(docLink).toBeTruthy();
+    expect(docLink?.getAttribute('href')).toBe('/workspaces/ws-fallback');
+    expect(docLink?.getAttribute('aria-current')).toBe('page');
+
+    expect(membersLink).toBeTruthy();
+    expect(membersLink?.getAttribute('href')).toBe('/workspaces/ws-fallback/members');
+
+    // 2. Precedence test: activeWorkspace has stale ID 'ws-stale', but route is 'ws-new'
+    mockCurrentPath = '/workspaces/ws-new/documents/doc-456';
+    await renderWithContext(el(Sidebar), {
+      activeWorkspace: createMockWorkspace({ id: 'ws-stale', name: 'Stale Workspace' }),
+    });
+
+    const updatedLinks = Array.from(container.querySelectorAll('a'));
+    const updatedDocLink = updatedLinks.find((a) => a.textContent?.includes('Documents'));
+    const updatedMembersLink = updatedLinks.find((a) => a.textContent?.includes('Members'));
+
+    // Route workspace ID MUST take precedence over stale activeWorkspace ID
+    expect(updatedDocLink?.getAttribute('href')).toBe('/workspaces/ws-new');
+    expect(updatedMembersLink?.getAttribute('href')).toBe('/workspaces/ws-new/members');
+
+    // 3. /workspaces/new route must not treat 'new' as a workspace ID
+    mockCurrentPath = '/workspaces/new';
+    await renderWithContext(el(Sidebar), { activeWorkspace: null });
+
+    const newLinks = Array.from(container.querySelectorAll('a'));
+    const newDocLink = newLinks.find((a) => a.textContent?.includes('Documents'));
+    expect(newDocLink?.getAttribute('href')).toBe('#');
+  });
+
+  it('22. WorkspacePage error state renders a Back to Workspaces recovery button', async () => {
+    mockCurrentPath = '/workspaces/ws-inaccessible';
+
+    await renderWithContext(
+      el(WorkspacePage, { params: { workspaceId: 'ws-inaccessible' } }),
+      {
+        activeWorkspace: null,
+        error: 'Access denied: You do not have permission to access this workspace.',
+        userRole: null,
+      },
+    );
+
+    const heading = container.querySelector('h1');
+    expect(heading?.textContent).toBe('Access Denied');
+
+    const backBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Back to Workspaces'),
+    );
+    expect(backBtn).toBeTruthy();
+
+    await act(async () => {
+      backBtn!.click();
+    });
+
+    expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('23. WorkspaceMembersPage renders role-adaptive breadcrumbs and headings for Viewers vs Admins', async () => {
+    mockCurrentPath = '/workspaces/ws-1/members';
+
+    vi.spyOn(api, 'listWorkspaceMembers').mockResolvedValue({
+      members: [
+        {
+          id: 'usr-1',
+          user_id: 'usr-1',
+          email: 'test@example.com',
+          display_name: 'Test User',
+          role: 'viewer',
+          joined_at: new Date().toISOString(),
+        },
+      ],
+    } as any);
+    vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValue({ invitations: [] } as any);
+
+    // 1. Viewer Role
+    await renderWithContext(
+      el(WorkspaceMembersPage, { params: { workspaceId: 'ws-1' } }),
+      { userRole: 'viewer' },
+    );
+
+    // Breadcrumb current must be "Members" not "Manage Members"
+    const breadcrumbCurrent = container.querySelector('nav[aria-label="Breadcrumb"] [aria-current="page"]');
+    expect(breadcrumbCurrent?.textContent?.trim()).toBe('Members');
+
+    // Heading must be "Workspace Members"
+    const heading = container.querySelector('h1');
+    expect(heading?.textContent).toBe('Workspace Members');
+
+    // Description must NOT mention creating invitations
+    const desc = container.querySelector('p');
+    expect(desc?.textContent).toBe('View workspace members and role assignments.');
+
+    // Invite button must be hidden
+    const inviteBtn = container.querySelector('button[aria-label="Invite new member"]');
+    expect(inviteBtn).toBeNull();
+
+    // 2. Admin Role
+    await renderWithContext(
+      el(WorkspaceMembersPage, { params: { workspaceId: 'ws-1' } }),
+      { userRole: 'admin' },
+    );
+
+    const adminBreadcrumb = container.querySelector('nav[aria-label="Breadcrumb"] [aria-current="page"]');
+    expect(adminBreadcrumb?.textContent?.trim()).toBe('Manage Members');
+
+    const adminHeading = container.querySelector('h1');
+    expect(adminHeading?.textContent).toBe('Manage Members');
+
+    const adminInviteBtn = container.querySelector('button[aria-label="Invite new member"]');
+    expect(adminInviteBtn).toBeTruthy();
+  });
+
+  it('24. DocumentTree automatically expands archived section when navigating to an archived document', async () => {
+    mockCurrentPath = '/workspaces/ws-1/documents/archived-doc-1';
+
+    const activeDoc = createMockDoc({ id: 'active-1', title: 'Active Doc', is_archived: false });
+    const archivedDoc = createMockDoc({ id: 'archived-doc-1', title: 'Archived Plan', is_archived: true });
+
+    vi.spyOn(api, 'listDocuments').mockResolvedValue({
+      documents: [activeDoc, archivedDoc],
+    });
+
+    await renderComponent(
+      el(
+        AuthContext.Provider,
+        { value: mockAuthValue },
+        el(
+          WorkspaceContext.Provider,
+          { value: createMockWorkspaceContext({ userRole: 'editor' }) },
+          el(
+            DocumentNavigationProvider,
+            { workspaceId: 'ws-1' },
+            el(DocumentTree),
+          ),
+        ),
+      ),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The archived document should be visible in the DOM because archivedExpanded auto-triggered
+    const archivedDocElement = Array.from(container.querySelectorAll('span, a')).find((el) =>
+      el.textContent?.includes('Archived Plan'),
+    );
+    expect(archivedDocElement).toBeTruthy();
+  });
+
+  it('25. AppShell restores focus to the hamburger button when mobile drawer is dismissed by Escape or close button', async () => {
+    await renderWithContext(
+      el(AppShell, null, el('div', { id: 'test-child' }, 'Child Content')),
+    );
+
+    const hamburger = container.querySelector('button[aria-label="Toggle navigation menu"]') as HTMLButtonElement;
+    expect(hamburger).toBeTruthy();
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+
+    // 1. Open drawer
+    await act(async () => {
+      hamburger.click();
+    });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+    // 2. Dismiss via Escape key -> focus restored to hamburger
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(hamburger);
+
+    // 3. Open drawer again
+    await act(async () => {
+      hamburger.click();
+    });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+    // 4. Dismiss via mobile close button in Sidebar -> focus restored to hamburger
+    const closeBtn = container.querySelector('button[aria-label="Close navigation sidebar"]') as HTMLButtonElement;
+    expect(closeBtn).toBeTruthy();
+
+    await act(async () => {
+      closeBtn.click();
+    });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(hamburger);
+  });
+
+  it('26. DocumentTree workspace switching resets expansion initialization and reinitializes in new workspace', async () => {
+    mockCurrentPath = '/workspaces/ws-1';
+
+    const ws1Root = createMockDoc({ id: 'ws1-root', workspace_id: 'ws-1', title: 'WS1 Root', parent_id: null });
+    const ws1Child = createMockDoc({ id: 'ws1-child', workspace_id: 'ws-1', title: 'WS1 Child', parent_id: 'ws1-root' });
+
+    const ws2Root = createMockDoc({ id: 'ws2-root', workspace_id: 'ws-2', title: 'WS2 Root', parent_id: null });
+    const ws2Child = createMockDoc({ id: 'ws2-child', workspace_id: 'ws-2', title: 'WS2 Child', parent_id: 'ws2-root' });
+    const ws2Archived = createMockDoc({ id: 'ws2-archived', workspace_id: 'ws-2', title: 'WS2 Archived Doc', is_archived: true });
+
+    vi.spyOn(api, 'listDocuments').mockImplementation(async (wsId: string) => {
+      if (wsId === 'ws-1') return { documents: [ws1Root, ws1Child] };
+      if (wsId === 'ws-2') return { documents: [ws2Root, ws2Child, ws2Archived] };
+      return { documents: [] };
+    });
+
+    function DynamicTestShell({ wsId }: { wsId: string }) {
+      return el(
+        AuthContext.Provider,
+        { value: mockAuthValue },
+        el(
+          WorkspaceContext.Provider,
+          { value: createMockWorkspaceContext({ activeWorkspace: createMockWorkspace({ id: wsId }) }) },
+          el(
+            DocumentNavigationProvider,
+            { workspaceId: wsId },
+            el(DocumentTree),
+          ),
+        ),
+      );
+    }
+
+    // 1. Initial render in ws-1
+    await renderComponent(el(DynamicTestShell, { wsId: 'ws-1' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // ws1Child should be visible because ws1Root was auto-expanded
+    expect(Array.from(container.querySelectorAll('span, a')).some((el) => el.textContent?.includes('WS1 Child'))).toBe(true);
+
+    // 2. Switch to ws-2 directly to an archived document
+    mockCurrentPath = '/workspaces/ws-2/documents/ws2-archived';
+    await renderComponent(el(DynamicTestShell, { wsId: 'ws-2' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // In ws-2, ws2Child should be visible (auto-expanded parent), and ws2Archived should be visible (auto-expanded archived section)
+    expect(Array.from(container.querySelectorAll('span, a')).some((el) => el.textContent?.includes('WS2 Child'))).toBe(true);
+    expect(Array.from(container.querySelectorAll('span, a')).some((el) => el.textContent?.includes('WS2 Archived Doc'))).toBe(true);
+
+    // Old workspace documents must not be in the tree
+    expect(Array.from(container.querySelectorAll('span, a')).some((el) => el.textContent?.includes('WS1 Child'))).toBe(false);
   });
 });
 

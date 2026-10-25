@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { ToastProvider } from '@/components/ui';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
@@ -17,6 +17,7 @@ export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const { activeWorkspace } = useWorkspace();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const hamburgerRef = useRef<HTMLButtonElement | null>(null);
 
   // Extract workspaceId from URL path if present (e.g. /workspaces/[workspaceId])
   // Route /workspaces/new is the workspace-creation route, not a workspace ID.
@@ -30,8 +31,11 @@ export function AppShell({ children }: AppShellProps) {
     setMobileSidebarOpen((prev) => !prev);
   };
 
-  const closeSidebar = () => {
+  const closeSidebar = (restoreFocus = false) => {
     setMobileSidebarOpen(false);
+    if (restoreFocus && hamburgerRef.current) {
+      hamburgerRef.current.focus();
+    }
   };
 
   // Close mobile sidebar on route change
@@ -43,7 +47,8 @@ export function AppShell({ children }: AppShellProps) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && mobileSidebarOpen) {
-        closeSidebar();
+        e.preventDefault();
+        closeSidebar(true);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
@@ -54,17 +59,24 @@ export function AppShell({ children }: AppShellProps) {
     <ToastProvider>
       <DocumentNavigationProvider workspaceId={currentWorkspaceId}>
         <div className={styles.shell}>
-          <Topbar onToggleSidebar={toggleSidebar} />
+          <Topbar
+            hamburgerRef={hamburgerRef}
+            onToggleSidebar={toggleSidebar}
+            isSidebarOpen={mobileSidebarOpen}
+          />
           <div className={styles.body}>
             <div
               className={`${styles.sidebarWrapper} ${mobileSidebarOpen ? styles.sidebarOpen : ''}`}
             >
-              <Sidebar onClose={closeSidebar} />
+              <Sidebar
+                onClose={() => closeSidebar(false)}
+                onDismiss={() => closeSidebar(true)}
+              />
             </div>
 
             <div
               className={`${styles.backdrop} ${mobileSidebarOpen ? styles.backdropOpen : ''}`}
-              onClick={closeSidebar}
+              onClick={() => closeSidebar(false)}
               aria-hidden="true"
             />
 

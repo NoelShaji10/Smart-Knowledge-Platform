@@ -24,6 +24,7 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   const canCreate = userRole === 'owner' || userRole === 'admin' || userRole === 'editor';
+  const canManageMembers = userRole === 'owner' || userRole === 'admin';
   const isViewer = userRole === 'viewer';
 
   const documents = nav ? nav.activeDocuments : localDocs;
@@ -146,13 +147,16 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
           <p className={styles.description}>
             {error || 'The workspace you requested could not be loaded or you do not have permission to view it.'}
           </p>
-          {workspaceId && !isAccessDenied && (
-            <div style={{ marginTop: 'var(--space-4)' }}>
+          <div style={{ marginTop: 'var(--space-4)', display: 'flex', gap: 'var(--space-2)' }}>
+            {workspaceId && !isAccessDenied && (
               <Button variant="secondary" onClick={() => loadWorkspace(workspaceId)}>
                 Retry
               </Button>
-            </div>
-          )}
+            )}
+            <Button variant={isAccessDenied ? 'primary' : 'secondary'} onClick={() => router.push('/')}>
+              Back to Workspaces
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -224,8 +228,11 @@ export default function WorkspacePage({ params }: { params?: { workspaceId?: str
 
         <div className={styles.actions}>
           <Link href={`/workspaces/${activeWorkspace?.id || workspaceId}/members`}>
-            <Button variant="secondary" aria-label="Manage Members">
-              Manage Members
+            <Button
+              variant="secondary"
+              aria-label={canManageMembers ? 'Manage Members' : 'Workspace Members'}
+            >
+              {canManageMembers ? 'Manage Members' : 'Members'}
             </Button>
           </Link>
           {canCreate && (

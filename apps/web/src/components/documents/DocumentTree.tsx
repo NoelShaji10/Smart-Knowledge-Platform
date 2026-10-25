@@ -303,6 +303,13 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
         return changed ? next : prev;
       });
     }
+
+    // Auto-expand archived section if the active document is archived or has an archived ancestor
+    const currentDoc = documents.find((d) => d.id === currentDocId);
+    const hasArchivedAncestor = ancestors.some((a) => a.isArchived);
+    if (currentDoc?.is_archived || hasArchivedAncestor) {
+      setArchivedExpanded(true);
+    }
   }, [currentDocId, documents]);
 
   // Auto-expand parents on initial load of documents
@@ -323,18 +330,20 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
   }, [documents]);
 
   // Reset expansion and state when active workspace changes
-  const lastWsIdRef = useRef<string | null>(activeWorkspace?.id || null);
+  const effectiveWsId = nav?.workspaceId || activeWorkspace?.id || null;
+  const lastWsIdRef = useRef<string | null>(effectiveWsId);
   useEffect(() => {
-    if (activeWorkspace?.id !== lastWsIdRef.current) {
-      lastWsIdRef.current = activeWorkspace?.id || null;
+    if (effectiveWsId !== lastWsIdRef.current) {
+      lastWsIdRef.current = effectiveWsId;
       hasInitializedExpansionRef.current = false;
       setExpandedNodeIds(new Set());
+      setArchivedExpanded(false);
       setRenamingDocId(null);
       if (!nav) {
         setLocalDocs([]);
       }
     }
-  }, [activeWorkspace?.id, nav]);
+  }, [effectiveWsId, nav]);
 
   const fetchDocuments = useCallback(async () => {
     if (nav) {
@@ -492,7 +501,11 @@ export function DocumentTree({ onNavigate }: DocumentTreeProps = {}) {
         new CustomEvent('document:updated', { detail: { document: res.document } }),
       );
     } catch (err) {
-      showToast('Failed to rename document', 'error');
+      if (err instanceof ApiError && err.status === 403) {
+        showToast('Access denied: You do not have permission to rename this document', 'error');
+      } else {
+        showToast('Failed to rename document', 'error');
+      }
       // Revert title in state to ensure truthfulness
       if (nav) {
         nav.updateDocument({ ...doc, title: originalTitle });

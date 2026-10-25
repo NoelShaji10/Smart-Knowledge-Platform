@@ -112,3 +112,32 @@
     padding: var(--space-1.5) var(--space-2);
   }
 }
+
+.readOnlyToolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1.5) var(--space-3);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: var(--space-5);
+  user-select: none;
+  max-width: 100%;
+  box-sizing: border-box;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.03);
+}
+
+.readOnlyIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1.5);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--fg-secondary);
+}
+

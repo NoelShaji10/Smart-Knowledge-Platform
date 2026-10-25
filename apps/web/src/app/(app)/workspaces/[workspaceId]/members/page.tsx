@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -56,6 +57,7 @@ export default function WorkspaceMembersPage({
   params?: { workspaceId?: string };
 }) {
   const { showToast } = useToast();
+  const router = useRouter();
   const { user } = useAuth();
   const { activeWorkspace, loadWorkspace, userRole } = useWorkspace();
   const workspaceId = params?.workspaceId || '';
@@ -334,7 +336,7 @@ export default function WorkspaceMembersPage({
           /
         </span>
         <span className={styles.breadcrumbCurrent} aria-current="page">
-          Manage Members
+          {canManage ? 'Manage Members' : 'Members'}
         </span>
       </nav>
 
@@ -342,12 +344,13 @@ export default function WorkspaceMembersPage({
       <header className={styles.headerSection}>
         <div className={styles.headerInfo}>
           <div className={styles.titleRow}>
-            <h1 className={styles.heading}>Manage Members</h1>
+            <h1 className={styles.heading}>{canManage ? 'Manage Members' : 'Workspace Members'}</h1>
             {userRole && <Badge variant={userRole}>{userRole}</Badge>}
           </div>
           <p className={styles.description}>
-            View workspace members, manage role assignments, and create shareable invitation
-            links.
+            {canManage
+              ? 'View workspace members, manage role assignments, and create shareable invitation links.'
+              : 'View workspace members and role assignments.'}
           </p>
         </div>
 
@@ -377,9 +380,18 @@ export default function WorkspaceMembersPage({
       {error && !rateLimitMessage && (
         <div className={styles.bannerError} role="alert">
           <div>{error}</div>
-          <Button variant="secondary" size="sm" onClick={() => fetchData()}>
-            Retry
-          </Button>
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <Button variant="secondary" size="sm" onClick={() => fetchData()}>
+              Retry
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => router.push(`/workspaces/${workspaceId}`)}
+            >
+              Back to Documents
+            </Button>
+          </div>
         </div>
       )}
 

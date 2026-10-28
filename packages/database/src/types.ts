@@ -51,6 +51,15 @@ export interface WorkspaceInvitationsTable {
   accepted_at: Date | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+  email_delivery_status: Generated<'not_requested' | 'queued' | 'processing' | 'accepted_by_provider' | 'failed' | 'permanently_failed'>;
+  email_queued_at: Date | null;
+  email_sent_at: Date | null;
+  email_last_attempt_at: Date | null;
+  email_delivery_attempts: Generated<number>;
+  email_failure_reason: string | null;
+  claim_id: string | null;
+  claim_expires_at: Date | null;
+  encrypted_token: ColumnType<Record<string, unknown> | null, string | Record<string, unknown> | null, string | Record<string, unknown> | null>;
 }
 
 export interface DocumentsTable {

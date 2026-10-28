@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import { Kysely } from 'kysely';
 import { Database, ScopedDb, withSystemContext } from '@knowledge/database';
-import { WorkspaceRole, InvitationRole, InvitationStatus } from '@knowledge/types';
+import { WorkspaceRole, InvitationRole, InvitationStatus, EmailDeliveryStatus } from '@knowledge/types';
+import { encryptInvitationToken, buildInvitationAad } from '@knowledge/email';
+import { getPgBoss, enqueueInvitationEmailJob } from '@knowledge/jobs';
 import { emitAuditEvent } from './audit';
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,12 @@ export interface WorkspaceInvitationRecord {
   created_at: Date;
   inviter_name?: string | null;
   inviter_email?: string | null;
+  email_delivery_status?: EmailDeliveryStatus;
+  email_queued_at?: Date | null;
+  email_sent_at?: Date | null;
+  email_last_attempt_at?: Date | null;
+  email_delivery_attempts?: number;
+  email_failure_reason?: string | null;
 }
 
 export interface PublicInvitationDetails {
@@ -211,7 +219,7 @@ export async function createInvitation(
     }
   }
 
-  return scopedDb.execute(async (db) => {
+  const result = await scopedDb.execute(async (db) => {
     // 3. Authoritative inviter membership & role check
     const inviterMember = await db
       .selectFrom('workspace_members')
@@ -262,6 +270,15 @@ export async function createInvitation(
     const { rawToken, tokenHash } = generateInvitationToken();
     const expiryDays = expiresInDays && expiresInDays > 0 ? expiresInDays : 7;
     const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
+    const invitationId = crypto.randomUUID();
+
+    let encryptedTokenPayload: any = null;
+    if (normalizedEmail) {
+      const aad = buildInvitationAad(invitationId);
+      encryptedTokenPayload = encryptInvitationToken(rawToken, undefined, {
+        associatedData: aad,
+      });
+    }
 
     // 6. Invalidate previous pending invitations for this email in this workspace
     if (normalizedEmail) {
@@ -275,9 +292,13 @@ export async function createInvitation(
     }
 
     // 7. Insert new invitation row
+    const emailDeliveryStatus: EmailDeliveryStatus = normalizedEmail ? 'queued' : 'not_requested';
+    const emailQueuedAt = normalizedEmail ? new Date() : null;
+
     const row = await db
       .insertInto('workspace_invitations')
       .values({
+        id: invitationId,
         workspace_id: workspaceId,
         inviter_id: inviterId,
         invitee_email: normalizedEmail,
@@ -285,6 +306,10 @@ export async function createInvitation(
         token_hash: tokenHash,
         status: 'pending',
         expires_at: expiresAt,
+        email_delivery_status: emailDeliveryStatus,
+        email_queued_at: emailQueuedAt,
+        email_delivery_attempts: 0,
+        encrypted_token: encryptedTokenPayload ? JSON.stringify(encryptedTokenPayload) : null,
       })
       .returning([
         'id',
@@ -295,6 +320,12 @@ export async function createInvitation(
         'status',
         'expires_at',
         'created_at',
+        'email_delivery_status',
+        'email_queued_at',
+        'email_sent_at',
+        'email_last_attempt_at',
+        'email_delivery_attempts',
+        'email_failure_reason',
       ])
       .executeTakeFirstOrThrow();
 
@@ -325,10 +356,51 @@ export async function createInvitation(
         status: row.status as InvitationStatus,
         expires_at: row.expires_at,
         created_at: row.created_at,
+        email_delivery_status: row.email_delivery_status as EmailDeliveryStatus,
+        email_queued_at: row.email_queued_at,
+        email_sent_at: row.email_sent_at,
+        email_last_attempt_at: row.email_last_attempt_at,
+        email_delivery_attempts: row.email_delivery_attempts,
+        email_failure_reason: row.email_failure_reason,
       },
       rawToken,
+      encryptedTokenPayload,
     };
   });
+
+  // 9. Post-commit enqueue: Enqueue pg-boss delivery job AFTER transaction commits to prevent worker visibility race (AUD-T3-02)
+  if (normalizedEmail && result.encryptedTokenPayload) {
+    try {
+      const boss = getPgBoss();
+      await enqueueInvitationEmailJob(boss, {
+        invitationId: result.invitation.id,
+        workspaceId,
+        encryptedToken: result.encryptedTokenPayload,
+        keyId: result.encryptedTokenPayload.keyId,
+      });
+    } catch (enqueueErr: any) {
+      // In the rare event of enqueue failure after commit, record failure state in DB and fail closed
+      await withSystemContext(async (sysDb) => {
+        await sysDb
+          .updateTable('workspace_invitations')
+          .set({
+            email_delivery_status: 'failed',
+            email_failure_reason: 'QUEUE_ENQUEUE_FAILED',
+            email_last_attempt_at: new Date(),
+            updated_at: new Date(),
+          })
+          .where('id', '=', result.invitation.id)
+          .execute();
+      });
+
+      result.invitation.email_delivery_status = 'failed';
+      result.invitation.email_failure_reason = 'QUEUE_ENQUEUE_FAILED';
+
+      throw new Error(`Failed to enqueue invitation delivery job: ${enqueueErr?.message || 'Queue error'}`);
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -370,6 +442,12 @@ export async function listWorkspaceInvitations(
         'workspace_invitations.accepted_by',
         'workspace_invitations.accepted_at',
         'workspace_invitations.created_at',
+        'workspace_invitations.email_delivery_status',
+        'workspace_invitations.email_queued_at',
+        'workspace_invitations.email_sent_at',
+        'workspace_invitations.email_last_attempt_at',
+        'workspace_invitations.email_delivery_attempts',
+        'workspace_invitations.email_failure_reason',
         'inviter.display_name as inviter_name',
         'inviter.email as inviter_email',
       ])
@@ -394,6 +472,12 @@ export async function listWorkspaceInvitations(
         created_at: r.created_at,
         inviter_name: r.inviter_name,
         inviter_email: r.inviter_email,
+        email_delivery_status: r.email_delivery_status as EmailDeliveryStatus,
+        email_queued_at: r.email_queued_at,
+        email_sent_at: r.email_sent_at,
+        email_last_attempt_at: r.email_last_attempt_at,
+        email_delivery_attempts: r.email_delivery_attempts,
+        email_failure_reason: r.email_failure_reason,
       };
     });
   });
@@ -481,7 +565,7 @@ export async function resendWorkspaceInvitation(
   actorUserId: string,
   auditContext?: { ipAddress?: string; userAgent?: string },
 ): Promise<{ invitation: WorkspaceInvitationRecord; rawToken: string }> {
-  return scopedDb.execute(async (db) => {
+  const result = await scopedDb.execute(async (db) => {
     // 1. Authoritative membership & admin check
     const member = await db
       .selectFrom('workspace_members')
@@ -524,11 +608,24 @@ export async function resendWorkspaceInvitation(
     // 4. Generate new secret
     const { rawToken, tokenHash } = generateInvitationToken();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const newInvitationId = crypto.randomUUID();
+
+    let encryptedTokenPayload: any = null;
+    if (existing.invitee_email) {
+      const aad = buildInvitationAad(newInvitationId);
+      encryptedTokenPayload = encryptInvitationToken(rawToken, undefined, {
+        associatedData: aad,
+      });
+    }
 
     // 5. Insert replacement invitation row
+    const emailDeliveryStatus: EmailDeliveryStatus = existing.invitee_email ? 'queued' : 'not_requested';
+    const emailQueuedAt = existing.invitee_email ? new Date() : null;
+
     const newRow = await db
       .insertInto('workspace_invitations')
       .values({
+        id: newInvitationId,
         workspace_id: workspaceId,
         inviter_id: actorUserId,
         invitee_email: existing.invitee_email,
@@ -536,6 +633,10 @@ export async function resendWorkspaceInvitation(
         token_hash: tokenHash,
         status: 'pending',
         expires_at: expiresAt,
+        email_delivery_status: emailDeliveryStatus,
+        email_queued_at: emailQueuedAt,
+        email_delivery_attempts: 0,
+        encrypted_token: encryptedTokenPayload ? JSON.stringify(encryptedTokenPayload) : null,
       })
       .returning([
         'id',
@@ -546,6 +647,12 @@ export async function resendWorkspaceInvitation(
         'status',
         'expires_at',
         'created_at',
+        'email_delivery_status',
+        'email_queued_at',
+        'email_sent_at',
+        'email_last_attempt_at',
+        'email_delivery_attempts',
+        'email_failure_reason',
       ])
       .executeTakeFirstOrThrow();
 
@@ -576,10 +683,53 @@ export async function resendWorkspaceInvitation(
         status: newRow.status as InvitationStatus,
         expires_at: newRow.expires_at,
         created_at: newRow.created_at,
+        email_delivery_status: newRow.email_delivery_status as EmailDeliveryStatus,
+        email_queued_at: newRow.email_queued_at,
+        email_sent_at: newRow.email_sent_at,
+        email_last_attempt_at: newRow.email_last_attempt_at,
+        email_delivery_attempts: newRow.email_delivery_attempts,
+        email_failure_reason: newRow.email_failure_reason,
       },
       rawToken,
+      encryptedTokenPayload,
     };
   });
+
+  // 7. Post-commit enqueue: Enqueue pg-boss delivery job AFTER transaction commits to prevent worker visibility race (AUD-T3-02)
+  if (result.invitation.invitee_email && result.encryptedTokenPayload) {
+    try {
+      const boss = getPgBoss();
+      await enqueueInvitationEmailJob(boss, {
+        invitationId: result.invitation.id,
+        workspaceId,
+        encryptedToken: result.encryptedTokenPayload,
+        keyId: result.encryptedTokenPayload.keyId,
+      });
+    } catch (enqueueErr: any) {
+      // In the rare event of enqueue failure after commit, record failure state in DB and fail closed
+      await withSystemContext(async (sysDb) => {
+        await sysDb
+          .updateTable('workspace_invitations')
+          .set({
+            email_delivery_status: 'failed',
+            email_failure_reason: 'QUEUE_ENQUEUE_FAILED',
+            email_last_attempt_at: new Date(),
+            updated_at: new Date(),
+          })
+          .where('id', '=', result.invitation.id)
+          .execute();
+      });
+
+      result.invitation.email_delivery_status = 'failed';
+      result.invitation.email_failure_reason = 'QUEUE_ENQUEUE_FAILED';
+
+      throw new Error(
+        `Failed to enqueue replacement invitation delivery job: ${enqueueErr?.message || 'Queue error'}`,
+      );
+    }
+  }
+
+  return result;
 }
 
 /**

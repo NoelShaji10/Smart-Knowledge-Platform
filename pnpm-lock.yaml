@@ -56,6 +56,12 @@ importers:
       '@knowledge/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@knowledge/email':
+        specifier: workspace:*
+        version: link:../../packages/email
+      '@knowledge/jobs':
+        specifier: workspace:*
+        version: link:../../packages/jobs
       '@knowledge/redis':
         specifier: workspace:*
         version: link:../../packages/redis
@@ -245,6 +251,9 @@ importers:
       '@knowledge/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@knowledge/email':
+        specifier: workspace:*
+        version: link:../../packages/email
       '@knowledge/jobs':
         specifier: workspace:*
         version: link:../../packages/jobs
@@ -317,11 +326,30 @@ importers:
         specifier: ^8.11.2
         version: 8.21.0
 
+  packages/email:
+    dependencies:
+      '@knowledge/config':
+        specifier: workspace:*
+        version: link:../config
+      '@knowledge/types':
+        specifier: workspace:*
+        version: link:../types
+      nodemailer:
+        specifier: ^6.9.13
+        version: 6.10.1
+    devDependencies:
+      '@types/nodemailer':
+        specifier: ^6.4.14
+        version: 6.4.24
+
   packages/jobs:
     dependencies:
       '@knowledge/config':
         specifier: workspace:*
         version: link:../config
+      '@knowledge/email':
+        specifier: workspace:*
+        version: link:../email
       pg:
         specifier: ^8.11.3
         version: 8.23.0
@@ -1195,6 +1223,9 @@ packages:
   '@types/node@20.19.43':
     resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
 
+  '@types/nodemailer@6.4.24':
+    resolution: {integrity: sha512-Ww4u0rT9wQNXh4JiQaIwx3QWdcOFXzOjQA2zc+jtFYNmQiT4mIUqcDin51bDFdkzKubFnQCZNK7FIHlPKQ/q9w==}
+
   '@types/pg@8.21.0':
     resolution: {integrity: sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q==}
 
@@ -2018,6 +2049,10 @@ packages:
   node-gyp-build@4.8.4:
     resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
+
+  nodemailer@6.10.1:
+    resolution: {integrity: sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA==}
+    engines: {node: '>=6.0.0'}
 
   npm-run-path@5.3.0:
     resolution: {integrity: sha512-ppwTtiJZq0O/ai0z7yfudtBpWIoxM8yE6nHi1X47eFR2EWORqfbu6CnPlNsjeN683eT0qG6H/Pyf9fCcvjnnnQ==}
@@ -3532,6 +3567,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/nodemailer@6.4.24':
+    dependencies:
+      '@types/node': 20.19.43
+
   '@types/pg@8.21.0':
     dependencies:
       '@types/node': 20.19.43
@@ -4456,6 +4495,8 @@ snapshots:
   node-addon-api@8.9.2: {}
 
   node-gyp-build@4.8.4: {}
+
+  nodemailer@6.10.1: {}
 
   npm-run-path@5.3.0:
     dependencies:

@@ -13,6 +13,8 @@
     "@knowledge/auth": "workspace:*",
     "@knowledge/config": "workspace:*",
     "@knowledge/database": "workspace:*",
+    "@knowledge/email": "workspace:*",
+    "@knowledge/jobs": "workspace:*",
     "@knowledge/redis": "workspace:*",
     "@knowledge/storage": "workspace:*",
     "@knowledge/types": "workspace:*",

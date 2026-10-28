@@ -1,4 +1,5 @@
 import PgBoss from 'pg-boss';
+export { PgBoss };
 import { getEnv } from '@knowledge/config';
 
 let bossInstance: PgBoss | null = null;

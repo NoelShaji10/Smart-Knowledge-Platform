@@ -12,6 +12,7 @@
     "@knowledge/ai-gateway": "workspace:*",
     "@knowledge/config": "workspace:*",
     "@knowledge/database": "workspace:*",
+    "@knowledge/email": "workspace:*",
     "@knowledge/jobs": "workspace:*",
     "@knowledge/storage": "workspace:*",
     "@knowledge/types": "workspace:*",

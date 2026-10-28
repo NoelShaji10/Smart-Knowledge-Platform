@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@knowledge/config": "workspace:*",
+    "@knowledge/email": "workspace:*",
     "pg": "^8.11.3",
     "pg-boss": "^9.0.3"
   },

@@ -17,15 +17,18 @@ export interface BadgeProps {
     | 'revoked'
     | 'success'
     | 'warning'
-    | 'danger';
+    | 'danger'
+    | 'info'
+    | 'processing';
   className?: string;
+  title?: string;
 }
 
-export function Badge({ children, variant = 'default', className = '' }: BadgeProps) {
+export function Badge({ children, variant = 'default', className = '', title }: BadgeProps) {
   const variantClass = styles[variant] || '';
 
   return (
-    <span className={`${styles.badge} ${variantClass} ${className}`.trim()}>
+    <span className={`${styles.badge} ${variantClass} ${className}`.trim()} title={title}>
       {children}
     </span>
   );

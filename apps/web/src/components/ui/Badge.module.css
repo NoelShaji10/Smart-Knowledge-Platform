@@ -56,3 +56,9 @@
   background-color: var(--surface-alt);
   color: var(--fg-tertiary);
 }
+
+.info,
+.processing {
+  background-color: var(--accent-subtle);
+  color: var(--accent);
+}

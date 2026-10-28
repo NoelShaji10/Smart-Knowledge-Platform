@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
@@ -18,9 +18,11 @@ import { InviteMemberModal } from '@/components/members/InviteMemberModal';
 import { ResendResultModal } from '@/components/members/ResendResultModal';
 import styles from './page.module.css';
 
-function formatDate(isoString: string): string {
+function formatDate(isoString?: string | null): string {
+  if (!isoString) return '';
   try {
     const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
     return d.toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
@@ -28,6 +30,35 @@ function formatDate(isoString: string): string {
     });
   } catch {
     return isoString;
+  }
+}
+
+function renderDeliveryStatusBadge(inv: WorkspaceInvitation) {
+  const isEmailBound = Boolean(inv.invitee_email);
+  if (!isEmailBound || inv.email_delivery_status === 'not_requested') {
+    return <Badge variant="default">Shareable Link</Badge>;
+  }
+
+  const deliveryStatus = inv.email_delivery_status || 'queued';
+
+  switch (deliveryStatus) {
+    case 'accepted_by_provider':
+      return <Badge variant="success">Email Sent</Badge>;
+    case 'queued':
+      return <Badge variant="warning">Queued</Badge>;
+    case 'processing':
+      return <Badge variant="info">Sending...</Badge>;
+    case 'failed':
+    case 'permanently_failed': {
+      const reason = inv.email_failure_reason || 'Delivery attempt failed';
+      return (
+        <Badge variant="danger" title={reason}>
+          Delivery Failed
+        </Badge>
+      );
+    }
+    default:
+      return null;
   }
 }
 
@@ -61,6 +92,7 @@ export default function WorkspaceMembersPage({
   const { user } = useAuth();
   const { activeWorkspace, loadWorkspace, userRole } = useWorkspace();
   const workspaceId = params?.workspaceId || '';
+  const mutationEpochRef = useRef(0);
 
   // Data states
   const [members, setMembers] = useState<WorkspaceMemberListItem[]>([]);
@@ -142,6 +174,7 @@ export default function WorkspaceMembersPage({
 
         if (signal?.aborted) return;
 
+        mutationEpochRef.current += 1;
         setMembers(membersRes.members || []);
         setInvitations(invitationsRes.invitations || []);
       } catch (err) {
@@ -177,6 +210,54 @@ export default function WorkspaceMembersPage({
       controller.abort();
     };
   }, [fetchData]);
+
+  // Lightweight bounded polling when invitations are actively queued or sending
+  useEffect(() => {
+    if (!workspaceId || !canManage) return;
+
+    const hasPendingDelivery = invitations.some(
+      (inv) =>
+        Boolean(inv.invitee_email) &&
+        (inv.email_delivery_status === 'queued' || inv.email_delivery_status === 'processing'),
+    );
+
+    if (!hasPendingDelivery) return;
+
+    let active = true;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const currentWorkspaceId = workspaceId;
+
+    const poll = async () => {
+      const startEpoch = mutationEpochRef.current;
+      try {
+        const res = await api.listWorkspaceInvitations(currentWorkspaceId);
+        if (
+          active &&
+          currentWorkspaceId === workspaceId &&
+          startEpoch === mutationEpochRef.current
+        ) {
+          if (res?.invitations) {
+            setInvitations(res.invitations);
+          }
+        }
+      } catch {
+        // Silently ignore background polling errors to prevent UI flicker
+      } finally {
+        if (active && currentWorkspaceId === workspaceId) {
+          timerId = setTimeout(poll, 4000);
+        }
+      }
+    };
+
+    timerId = setTimeout(poll, 4000);
+
+    return () => {
+      active = false;
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+    };
+  }, [workspaceId, canManage, invitations]);
 
   // ---------------------------------------------------------------------------
   // Action Handlers
@@ -237,6 +318,7 @@ export default function WorkspaceMembersPage({
     setRevokeLoading(true);
     try {
       await api.revokeWorkspaceInvitation(workspaceId, revokeTarget.id);
+      mutationEpochRef.current += 1;
 
       setInvitations((prev) =>
         prev.map((inv) =>
@@ -264,6 +346,7 @@ export default function WorkspaceMembersPage({
     setResendLoading(true);
     try {
       const res = await api.resendWorkspaceInvitation(workspaceId, resendTarget.id);
+      mutationEpochRef.current += 1;
 
       setInvitations((prev) => [
         res.invitation,
@@ -272,7 +355,13 @@ export default function WorkspaceMembersPage({
         ),
       ]);
 
-      showToast('Invitation replaced with a new link', 'success');
+      const isFailed =
+        resendTarget.email_delivery_status === 'failed' ||
+        resendTarget.email_delivery_status === 'permanently_failed';
+      showToast(
+        isFailed ? 'Email delivery retried' : 'Invitation replaced and email sent',
+        'success',
+      );
       setResendTarget(null);
 
       // Open new link display dialog
@@ -295,6 +384,7 @@ export default function WorkspaceMembersPage({
 
   // Callback when new invitation is created via modal
   const handleInvitationCreated = (newInv: WorkspaceInvitation) => {
+    mutationEpochRef.current += 1;
     setInvitations((prev) => [newInv, ...prev]);
   };
 
@@ -560,7 +650,7 @@ export default function WorkspaceMembersPage({
               invitations.map((inv) => {
                 const isEmailBound = Boolean(inv.invitee_email);
                 const isPending = inv.status === 'pending';
-                const canResend = canManage && (isOwner || inv.role !== 'admin');
+                const canResend = canManage && inv.status !== 'accepted' && (isOwner || inv.role !== 'admin');
                 const canRevoke = canManage && isPending && (isOwner || inv.role !== 'admin');
 
                 return (
@@ -585,16 +675,32 @@ export default function WorkspaceMembersPage({
                           <span className={styles.invitationTarget}>
                             {inv.invitee_email || 'Anyone with link'}
                           </span>
-                          {!isEmailBound && (
-                            <span className={styles.shareableBadge}>Shareable Link</span>
-                          )}
                           <Badge variant={inv.role}>{inv.role}</Badge>
                           <Badge variant={inv.status}>{inv.status}</Badge>
+                          {renderDeliveryStatusBadge(inv)}
                         </div>
                         <div className={styles.invitationDates}>
                           <span>{formatExpiry(inv.expires_at, inv.status)}</span>
                           <span>•</span>
                           <span>Created {formatDate(inv.created_at)}</span>
+                          {inv.email_sent_at && (
+                            <>
+                              <span>•</span>
+                              <span>Email sent {formatDate(inv.email_sent_at)}</span>
+                            </>
+                          )}
+                          {(inv.email_delivery_status === 'failed' ||
+                            inv.email_delivery_status === 'permanently_failed') && (
+                            <>
+                              <span>•</span>
+                              <span
+                                className={styles.deliveryErrorText}
+                                title={inv.email_failure_reason || 'Delivery attempt failed'}
+                              >
+                                Failed: {inv.email_failure_reason || 'Delivery attempt failed'}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -617,9 +723,20 @@ export default function WorkspaceMembersPage({
                           variant="secondary"
                           size="sm"
                           onClick={() => setResendTarget(inv)}
-                          aria-label={`Replace and copy link for ${inv.invitee_email || 'shareable link'}`}
+                          disabled={resendLoading}
+                          aria-label={`${
+                            inv.email_delivery_status === 'failed' ||
+                            inv.email_delivery_status === 'permanently_failed'
+                              ? 'Retry email'
+                              : 'Resend or replace link'
+                          } for ${inv.invitee_email || 'shareable link'}`}
                         >
-                          Replace Link
+                          {inv.email_delivery_status === 'failed' ||
+                          inv.email_delivery_status === 'permanently_failed'
+                            ? 'Retry Email'
+                            : isEmailBound
+                              ? 'Resend / Replace Link'
+                              : 'Replace Link'}
                         </Button>
                       )}
                     </div>
@@ -719,17 +836,38 @@ export default function WorkspaceMembersPage({
         isOpen={Boolean(resendTarget)}
         onClose={() => setResendTarget(null)}
         onConfirm={handleConfirmResend}
-        title="Replace Invitation Link"
+        title={
+          resendTarget?.invitee_email
+            ? resendTarget.email_delivery_status === 'failed' ||
+              resendTarget.email_delivery_status === 'permanently_failed'
+              ? 'Retry Email Delivery'
+              : 'Resend Invitation'
+            : 'Replace Invitation Link'
+        }
         description={
           resendTarget ? (
             <span>
-              Replacing this invitation will <strong>immediately invalidate the old link</strong>{' '}
-              and generate a fresh secret invitation link. Are you sure you want to continue?
+              {resendTarget.invitee_email ? (
+                <>
+                  Resending will <strong>invalidate the previous invitation</strong> and send a fresh
+                  invitation email to <strong>{resendTarget.invitee_email}</strong>.
+                </>
+              ) : (
+                <>
+                  Replacing this invitation will <strong>immediately invalidate the old link</strong>{' '}
+                  and generate a fresh secret invitation link. Are you sure you want to continue?
+                </>
+              )}
             </span>
           ) : null
         }
         warningNote="Any recipient who received the previous link will no longer be able to use it."
-        confirmLabel="Replace Link"
+        confirmLabel={
+          resendTarget?.email_delivery_status === 'failed' ||
+          resendTarget?.email_delivery_status === 'permanently_failed'
+            ? 'Retry Email'
+            : 'Replace Link'
+        }
         confirmVariant="primary"
         loading={resendLoading}
       />

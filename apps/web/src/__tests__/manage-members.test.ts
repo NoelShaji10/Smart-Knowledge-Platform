@@ -166,6 +166,7 @@ describe('Task 3 Remediation: Manage Members & Workspace Invitations UI Tests', 
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     act(() => {
       root.unmount();
     });
@@ -707,6 +708,842 @@ describe('Task 3 Remediation: Manage Members & Workspace Invitations UI Tests', 
       expect(tableText).not.toContain('token_hash');
       expect(tableText).not.toContain('rawToken');
       expect(tableText).not.toContain('sha256');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8. Phase 5 Task 4: Email Delivery Status UI & Retry Tests
+  // ---------------------------------------------------------------------------
+  describe('8. Phase 5 Task 4: Email Delivery Status UI & Retry Tests', () => {
+    it('1. accepted_by_provider displays Email Sent badge and formatted timestamp', async () => {
+      const deliveryInv: WorkspaceInvitation = {
+        id: 'inv-sent-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'delivered@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'accepted_by_provider',
+        email_sent_at: '2026-10-20T10:01:30.000Z',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [deliveryInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Email Sent');
+      expect(text).toContain('Email sent');
+      expect(text).toContain('delivered@example.com');
+    });
+
+    it('2. queued displays Queued badge with warning styling', async () => {
+      const queuedInv: WorkspaceInvitation = {
+        id: 'inv-queued-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'queued@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'queued',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [queuedInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Queued');
+    });
+
+    it('3. processing displays Sending... badge with info styling', async () => {
+      const processingInv: WorkspaceInvitation = {
+        id: 'inv-proc-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'sending@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'processing',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [processingInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Sending...');
+    });
+
+    it('4. failed and permanently_failed display Delivery Failed with sanitized failure reason', async () => {
+      const failedInv: WorkspaceInvitation = {
+        id: 'inv-fail-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'failed@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+        email_failure_reason: 'ETIMEDOUT',
+      };
+
+      const permFailedInv: WorkspaceInvitation = {
+        id: 'inv-fail-2',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'permfailed@example.com',
+        role: 'viewer',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'permanently_failed',
+        email_failure_reason: '550 Mailbox not found',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [failedInv, permFailedInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Delivery Failed');
+      expect(text).toContain('ETIMEDOUT');
+      expect(text).toContain('550 Mailbox not found');
+    });
+
+    it('5. not_requested displays Shareable Link badge', async () => {
+      const shareableInv: WorkspaceInvitation = {
+        id: 'inv-share-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: null,
+        role: 'viewer',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'not_requested',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [shareableInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Shareable Link');
+    });
+
+    it('6. missing timestamp or failure reason does not crash and renders safe fallback', async () => {
+      const missingMetadataInv: WorkspaceInvitation = {
+        id: 'inv-safe-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'nofailreason@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+        email_failure_reason: null, // missing reason
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [missingMetadataInv],
+      });
+
+      await renderWithContext('owner');
+
+      const text = container.textContent || '';
+      expect(text).toContain('Delivery Failed');
+      expect(text).toContain('Delivery attempt failed');
+    });
+
+    it('7. retry controls appear as "Retry Email" for failed delivery and open retry confirmation', async () => {
+      const failedInv: WorkspaceInvitation = {
+        id: 'inv-retry-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'retryuser@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+        email_failure_reason: 'ECONNRESET',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [failedInv],
+      });
+
+      const mockReplaced = {
+        invitation: {
+          ...failedInv,
+          id: 'inv-fresh-uuid',
+          email_delivery_status: 'queued' as const,
+        },
+        rawToken: 'new-retry-raw-token-123',
+      };
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockResolvedValueOnce(mockReplaced);
+
+      await renderWithContext('owner');
+
+      // Check button text
+      const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Retry Email'),
+      );
+      expect(retryBtn).toBeDefined();
+
+      // Click Retry Email
+      await act(async () => {
+        retryBtn?.click();
+      });
+
+      // Confirm modal opens with "Retry Email Delivery" title
+      const modalTitle = document.body.querySelector('#confirm-modal-title');
+      expect(modalTitle?.textContent).toContain('Retry Email Delivery');
+
+      // Click Confirm button
+      const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Retry Email' && b.getAttribute('aria-label') === null,
+      );
+      expect(confirmBtn).toBeDefined();
+
+      await act(async () => {
+        confirmBtn?.click();
+      });
+
+      expect(api.resendWorkspaceInvitation).toHaveBeenCalledWith('ws-123', 'inv-retry-1');
+      expect(mockShowToast).toHaveBeenCalledWith('Email delivery retried', 'success');
+    });
+
+    it('8. repeated clicks cannot submit duplicate retry requests while pending', async () => {
+      const failedInv: WorkspaceInvitation = {
+        id: 'inv-pending-resend',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'pendingretry@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [failedInv],
+      });
+
+      let resolveResend: any;
+      const delayedResendPromise = new Promise<{ invitation: WorkspaceInvitation; rawToken: string }>((resolve) => {
+        resolveResend = resolve;
+      });
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockReturnValueOnce(delayedResendPromise as any);
+
+      await renderWithContext('owner');
+
+      const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Retry Email'),
+      );
+      await act(async () => {
+        retryBtn?.click();
+      });
+
+      const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Retry Email' && b.getAttribute('aria-label') === null,
+      );
+
+      // Click once
+      await act(async () => {
+        confirmBtn?.click();
+      });
+
+      // Confirm button is now disabled during execution
+      expect(confirmBtn?.getAttribute('disabled')).not.toBeNull();
+      expect(api.resendWorkspaceInvitation).toHaveBeenCalledTimes(1);
+
+      // Attempt second click while still loading
+      await act(async () => {
+        confirmBtn?.click();
+      });
+
+      expect(api.resendWorkspaceInvitation).toHaveBeenCalledTimes(1);
+
+      // Resolve and complete
+      await act(async () => {
+        resolveResend({
+          invitation: { ...failedInv, id: 'inv-done-uuid' },
+          rawToken: 'tok-done',
+        });
+      });
+    });
+
+    it('9. InviteMemberModal updated copy does not claim email delivery is unimplemented', async () => {
+      const modalContainer = document.createElement('div');
+      document.body.appendChild(modalContainer);
+      const modalRoot = createRoot(modalContainer);
+
+      const mockCreated = {
+        invitation: {
+          id: 'inv-modal-1',
+          workspace_id: 'ws-123',
+          inviter_id: 'user-owner',
+          invitee_email: 'newuser@example.com',
+          role: 'editor' as const,
+          status: 'pending' as const,
+          expires_at: new Date(Date.now() + 86400000).toISOString(),
+          created_at: new Date().toISOString(),
+          email_delivery_status: 'queued' as const,
+        },
+        rawToken: 'created-token-abc-123',
+      };
+
+      vi.spyOn(api, 'createWorkspaceInvitation').mockResolvedValueOnce(mockCreated);
+
+      await act(async () => {
+        modalRoot.render(
+          el(InviteMemberModal, {
+            isOpen: true,
+            workspaceId: 'ws-123',
+            userRole: 'owner',
+            onClose: vi.fn(),
+            onCreated: vi.fn(),
+          }),
+        );
+      });
+
+      const emailInput = modalContainer.querySelector('input[type="email"]') as HTMLInputElement;
+      expect(emailInput).toBeDefined();
+
+      await act(async () => {
+        setInputValue(emailInput, 'newuser@example.com');
+      });
+
+      const submitBtn = modalContainer.querySelector('button[type="submit"]') as HTMLButtonElement;
+      await act(async () => {
+        submitBtn.click();
+      });
+
+      const modalText = modalContainer.textContent || '';
+      expect(modalText).not.toContain('Email delivery is not currently implemented');
+      expect(modalText).toContain('Email queued');
+      expect(modalText).toContain('email is being sent');
+
+      act(() => {
+        modalRoot.unmount();
+      });
+      modalContainer.remove();
+    });
+
+    it('10. ResendResultModal updated copy does not claim email delivery is unimplemented', async () => {
+      const modalContainer = document.createElement('div');
+      document.body.appendChild(modalContainer);
+      const modalRoot = createRoot(modalContainer);
+
+      const resentInv: WorkspaceInvitation = {
+        id: 'inv-resent-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'alex@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      await act(async () => {
+        modalRoot.render(
+          el(ResendResultModal, {
+            isOpen: true,
+            invitation: resentInv,
+            rawToken: 'resent-token-xyz-789',
+            onClose: vi.fn(),
+          }),
+        );
+      });
+
+      const modalText = modalContainer.textContent || '';
+      expect(modalText).not.toContain('Email delivery is not currently configured');
+      expect(modalText).toContain('Email queued');
+      expect(modalText).toContain('A fresh invitation email is being sent');
+
+      const urlInput = modalContainer.querySelector('input[readonly]') as HTMLInputElement;
+      expect(urlInput?.value).toContain('/invitations/resent-token-xyz-789');
+
+      act(() => {
+        modalRoot.unmount();
+      });
+      modalContainer.remove();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9. Phase 5 Task 4 Remediation: Polling Races, Resend Permissions & Error UI
+  // ---------------------------------------------------------------------------
+  describe('9. Phase 5 Task 4 Remediation: Polling Races, Resend Permissions & Error UI', () => {
+    it('1. polling starts when an email-bound invitation is queued', async () => {
+      vi.useFakeTimers();
+      const queuedInv: WorkspaceInvitation = {
+        id: 'inv-poll-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'queuedpoll@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations')
+        .mockResolvedValueOnce({ invitations: [queuedInv] })
+        .mockResolvedValueOnce({
+          invitations: [{ ...queuedInv, email_delivery_status: 'processing' }],
+        });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Sending...');
+      vi.useRealTimers();
+    });
+
+    it('2. polling stops when delivery reaches accepted_by_provider', async () => {
+      vi.useFakeTimers();
+      const queuedInv: WorkspaceInvitation = {
+        id: 'inv-poll-2',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'acceptedpoll@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations')
+        .mockResolvedValueOnce({ invitations: [queuedInv] })
+        .mockResolvedValueOnce({
+          invitations: [{
+            ...queuedInv,
+            email_delivery_status: 'accepted_by_provider',
+            email_sent_at: '2026-10-20T10:05:00.000Z',
+          }],
+        });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Advance by 4000ms: poll 1 resolves with accepted_by_provider
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Email Sent');
+
+      // Advance by another 10000ms: polling should not fire again because delivery is terminal
+      await act(async () => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
+
+    it('3. polling stops when delivery reaches failed or permanently_failed', async () => {
+      vi.useFakeTimers();
+      const procInv: WorkspaceInvitation = {
+        id: 'inv-poll-3',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'failedpoll@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'processing',
+      };
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations')
+        .mockResolvedValueOnce({ invitations: [procInv] })
+        .mockResolvedValueOnce({
+          invitations: [{
+            ...procInv,
+            email_delivery_status: 'failed',
+            email_failure_reason: '554 Transaction failed',
+          }],
+        });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Advance by 4000ms: resolves with failed
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Delivery Failed');
+
+      // Advance further: polling must not trigger again
+      await act(async () => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
+
+    it('4. timers are cleaned up on component unmount', async () => {
+      vi.useFakeTimers();
+      const queuedInv: WorkspaceInvitation = {
+        id: 'inv-poll-4',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'unmountpoll@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValue({
+        invitations: [queuedInv],
+      });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Unmount component
+      act(() => {
+        root.unmount();
+      });
+
+      // Advance timer by 10000ms: no more polling should occur
+      await act(async () => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('5. in-flight polling request for Workspace A does not populate Workspace B after navigation', async () => {
+      vi.useFakeTimers();
+      const wsAInv: WorkspaceInvitation = {
+        id: 'inv-wsA',
+        workspace_id: 'ws-A',
+        inviter_id: 'user-owner',
+        invitee_email: 'wsa@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      let resolveWsAPoll: any;
+      const delayedWsAPollPromise = new Promise<{ invitations: WorkspaceInvitation[] }>((resolve) => {
+        resolveWsAPoll = resolve;
+      });
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations').mockImplementation(async (wsId) => {
+        if (wsId === 'ws-A') {
+          return delayedWsAPollPromise;
+        }
+        return { invitations: [] };
+      });
+
+      // Render on ws-A
+      await renderWithContext('owner', mockUser, 'ws-A');
+      expect(listSpy).toHaveBeenCalledWith('ws-A', expect.anything());
+
+      // Navigate to ws-B
+      await renderWithContext('owner', mockUser, 'ws-B');
+      expect(listSpy).toHaveBeenCalledWith('ws-B', expect.anything());
+
+      // Now resolve the delayed ws-A polling request
+      await act(async () => {
+        resolveWsAPoll({ invitations: [wsAInv] });
+      });
+
+      // The ws-A invitation must NOT be rendered into ws-B
+      const text = container.textContent || '';
+      expect(text).not.toContain('wsa@example.com');
+      vi.useRealTimers();
+    });
+
+    it('6. slow polling requests do not cause overlapping requests', async () => {
+      vi.useFakeTimers();
+      const queuedInv: WorkspaceInvitation = {
+        id: 'inv-poll-slow',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'slowpoll@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      let resolveSlowPoll: any;
+      const slowPollPromise = new Promise<{ invitations: WorkspaceInvitation[] }>((resolve) => {
+        resolveSlowPoll = resolve;
+      });
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations')
+        .mockResolvedValueOnce({ invitations: [queuedInv] }) // initial load
+        .mockImplementationOnce(() => slowPollPromise) // first poll at 4000ms
+        .mockResolvedValue({
+          invitations: [{ ...queuedInv, email_delivery_status: 'accepted_by_provider' }],
+        });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Advance by 4000ms: poll 1 starts and is slow
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+
+      // Advance by another 4000ms, then 8000ms while poll 1 is STILL pending:
+      await act(async () => {
+        vi.advanceTimersByTime(8000);
+      });
+      // Crucial: no overlapping requests should be sent while request is in-flight!
+      expect(listSpy).toHaveBeenCalledTimes(2);
+
+      // Now resolve slow poll 1
+      await act(async () => {
+        resolveSlowPoll({ invitations: [queuedInv] });
+      });
+
+      // Advance by 4000ms: next sequential poll fires
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('7. in-flight polling results cannot overwrite a newer resend result', async () => {
+      vi.useFakeTimers();
+      const originalInv: WorkspaceInvitation = {
+        id: 'inv-orig-1',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'mutate@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+        email_failure_reason: 'ETIMEDOUT',
+      };
+
+      const queuedTriggerInv: WorkspaceInvitation = {
+        id: 'inv-queued-trigger',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'queuedtrigger@example.com',
+        role: 'viewer',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'queued',
+      };
+
+      let resolvePendingPoll: any;
+      const delayedPollPromise = new Promise<{ invitations: WorkspaceInvitation[] }>((resolve) => {
+        resolvePendingPoll = resolve;
+      });
+
+      const listSpy = vi.spyOn(api, 'listWorkspaceInvitations')
+        .mockResolvedValueOnce({ invitations: [originalInv, queuedTriggerInv] }) // initial load
+        .mockImplementationOnce(() => delayedPollPromise); // poll starts and hangs
+
+      const freshResentInv: WorkspaceInvitation = {
+        id: 'inv-fresh-after-resend',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'mutate@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: new Date().toISOString(),
+        email_delivery_status: 'queued',
+      };
+
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockResolvedValueOnce({
+        invitation: freshResentInv,
+        rawToken: 'new-fresh-token',
+      });
+
+      await renderWithContext('owner');
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Trigger poll 1
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(listSpy).toHaveBeenCalledTimes(2);
+
+      // While poll 1 is in flight, user resends invitation
+      const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Retry Email'),
+      );
+      expect(retryBtn).toBeDefined();
+
+      await act(async () => {
+        retryBtn?.click();
+      });
+
+      const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Retry Email' && b.getAttribute('aria-label') === null,
+      );
+      await act(async () => {
+        confirmBtn?.click();
+      });
+
+      // At this point, local state has inv-fresh-after-resend and inv-orig-1 is revoked
+      // Now resolve the older in-flight poll with the stale snapshot
+      await act(async () => {
+        resolvePendingPoll({ invitations: [originalInv, queuedTriggerInv] });
+      });
+
+      // The stale poll must NOT overwrite the new state
+      // Modal should still display the fresh token/invitation and not be clobbered
+      const resendTitle = document.body.querySelector('#resend-modal-title');
+      expect(resendTitle?.textContent).toContain('New Invitation Link Generated');
+
+      vi.useRealTimers();
+    });
+
+    it('8. accepted invitations do not render resend or replace-link controls', async () => {
+      const acceptedInv: WorkspaceInvitation = {
+        id: 'inv-accepted-user',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'alreadyjoined@example.com',
+        role: 'editor',
+        status: 'accepted',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'accepted_by_provider',
+        email_sent_at: '2026-10-20T10:01:00.000Z',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValueOnce({
+        invitations: [acceptedInv],
+      });
+
+      await renderWithContext('owner');
+
+      // The table displays the accepted invitation
+      expect(container.textContent).toContain('alreadyjoined@example.com');
+      expect(container.textContent).toContain('accepted');
+
+      // Verify NO resend or replace link action buttons exist for this accepted invitation
+      const buttons = Array.from(container.querySelectorAll('button'));
+      const resendOrReplaceBtn = buttons.find(
+        (b) =>
+          b.textContent?.includes('Replace Link') ||
+          b.textContent?.includes('Resend') ||
+          b.textContent?.includes('Retry Email'),
+      );
+      expect(resendOrReplaceBtn).toBeUndefined();
+    });
+
+    it('9. resend API errors (400, 403, 429) produce appropriate error UI and do not leave loading stuck', async () => {
+      const failedInv: WorkspaceInvitation = {
+        id: 'inv-retry-error-test',
+        workspace_id: 'ws-123',
+        inviter_id: 'user-owner',
+        invitee_email: 'erroruser@example.com',
+        role: 'editor',
+        status: 'pending',
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+        created_at: '2026-10-20T10:00:00.000Z',
+        email_delivery_status: 'failed',
+        email_failure_reason: 'ECONNREFUSED',
+      };
+
+      vi.spyOn(api, 'listWorkspaceInvitations').mockResolvedValue({
+        invitations: [failedInv],
+      });
+
+      await renderWithContext('owner');
+
+      const triggerRetryAndConfirm = async () => {
+        const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+          b.textContent?.includes('Retry Email'),
+        );
+        await act(async () => {
+          retryBtn?.click();
+        });
+        const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
+          (b) => b.textContent === 'Retry Email' && b.getAttribute('aria-label') === null,
+        );
+        await act(async () => {
+          confirmBtn?.click();
+        });
+        return confirmBtn;
+      };
+
+      // Case A: 429 Rate Limit
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockRejectedValueOnce(
+        new ApiError('Rate limit reached', 429),
+      );
+      let confirmBtn = await triggerRetryAndConfirm();
+      expect(mockShowToast).toHaveBeenCalledWith(
+        'Rate limit reached: Please wait before resending invitations',
+        'error',
+      );
+      expect(confirmBtn?.getAttribute('disabled')).toBeNull(); // not left disabled/loading
+
+      // Case B: 400 Bad Request
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockRejectedValueOnce(
+        new ApiError('Cannot resend an invitation that has already been accepted', 400),
+      );
+      confirmBtn = await triggerRetryAndConfirm();
+      expect(mockShowToast).toHaveBeenCalledWith(
+        'Cannot resend an invitation that has already been accepted',
+        'error',
+      );
+      expect(confirmBtn?.getAttribute('disabled')).toBeNull();
+
+      // Case C: 403 Forbidden
+      vi.spyOn(api, 'resendWorkspaceInvitation').mockRejectedValueOnce(
+        new ApiError('Permission denied', 403),
+      );
+      confirmBtn = await triggerRetryAndConfirm();
+      expect(mockShowToast).toHaveBeenCalledWith(
+        'Permission denied',
+        'error',
+      );
+      expect(confirmBtn?.getAttribute('disabled')).toBeNull();
     });
   });
 });

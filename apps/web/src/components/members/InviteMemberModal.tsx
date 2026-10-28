@@ -224,8 +224,28 @@ export function InviteMemberModal({
                 <line x1="12" y1="8" x2="12.01" y2="8" />
               </svg>
               <div>
-                <strong>Manual delivery:</strong> Email delivery is not currently implemented.
-                Please copy and share this link directly with your team member.
+                {isEmailBound ? (
+                  createdData.invitation.email_delivery_status === 'accepted_by_provider' ? (
+                    <>
+                      <strong>Email sent:</strong> The invitation email has been sent to{' '}
+                      <code>{createdData.invitation.invitee_email}</code>. You can also share the direct link below.
+                    </>
+                  ) : createdData.invitation.email_delivery_status === 'failed' ||
+                    createdData.invitation.email_delivery_status === 'permanently_failed' ? (
+                    <>
+                      <strong>Delivery failed:</strong> The invitation was created, but the email could not be sent. You can share the invitation link manually.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Email queued:</strong> Your invitation has been created and the email is being sent to{' '}
+                      <code>{createdData.invitation.invitee_email}</code>. You can also share the direct link below.
+                    </>
+                  )
+                ) : (
+                  <>
+                    <strong>Shareable link ready:</strong> Your invitation link is ready. Anyone with this link can join the workspace as a {createdData.invitation.role}.
+                  </>
+                )}
               </div>
             </div>
 

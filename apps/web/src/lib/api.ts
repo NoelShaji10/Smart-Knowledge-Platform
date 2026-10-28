@@ -49,6 +49,14 @@ export interface WorkspaceMemberListItem {
   created_at: string;
 }
 
+export type EmailDeliveryStatus =
+  | 'not_requested'
+  | 'queued'
+  | 'processing'
+  | 'accepted_by_provider'
+  | 'failed'
+  | 'permanently_failed';
+
 export interface WorkspaceInvitation {
   id: string;
   workspace_id: string;
@@ -60,6 +68,14 @@ export interface WorkspaceInvitation {
   created_at: string;
   accepted_at?: string | null;
   accepted_by?: string | null;
+  inviter_name?: string | null;
+  inviter_email?: string | null;
+  email_delivery_status?: EmailDeliveryStatus;
+  email_queued_at?: string | null;
+  email_sent_at?: string | null;
+  email_last_attempt_at?: string | null;
+  email_delivery_attempts?: number;
+  email_failure_reason?: string | null;
 }
 
 export interface CreateInvitationResponse {

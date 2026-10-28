@@ -148,8 +148,28 @@ export function ResendResultModal({
               <line x1="12" y1="8" x2="12.01" y2="8" />
             </svg>
             <div>
-              <strong>Manual sharing required:</strong> Email delivery is not currently configured.
-              Copy and share this link directly with the recipient.
+              {isEmailBound ? (
+                invitation.email_delivery_status === 'accepted_by_provider' ? (
+                  <>
+                    <strong>Email sent:</strong> A new invitation email has been sent to{' '}
+                    <code>{invitation.invitee_email}</code>. The direct link is also available below if needed.
+                  </>
+                ) : invitation.email_delivery_status === 'failed' ||
+                  invitation.email_delivery_status === 'permanently_failed' ? (
+                  <>
+                    <strong>Delivery failed:</strong> A new invitation was generated, but email delivery failed. Please copy and share the link manually.
+                  </>
+                ) : (
+                  <>
+                    <strong>Email queued:</strong> A fresh invitation email is being sent to{' '}
+                    <code>{invitation.invitee_email}</code>. You can also share the direct link below.
+                  </>
+                )
+              ) : (
+                <>
+                  <strong>Shareable link ready:</strong> A new shareable link has been generated. Copy and share it with your team member.
+                </>
+              )}
             </div>
           </div>
 

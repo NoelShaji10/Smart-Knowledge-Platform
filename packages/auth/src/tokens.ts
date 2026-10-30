@@ -21,7 +21,7 @@ export function hashToken(rawToken: string): string {
 }
 
 export function issueAccessToken(
-  user: { id: string; email: string },
+  user: { id: string; email: string; emailVerified?: boolean },
   workspaces: WorkspaceClaim[] = [],
 ): string {
   const env = getEnv();
@@ -29,6 +29,7 @@ export function issueAccessToken(
     {
       sub: user.id,
       email: user.email,
+      email_verified: Boolean(user.emailVerified),
       workspaces,
     },
     env.JWT_SECRET,
@@ -119,7 +120,7 @@ export async function rotateRefreshToken(
     const user = await systemDb
       .selectFrom('users')
       .where('id', '=', tokenRow.user_id)
-      .select(['id', 'email'])
+      .select(['id', 'email', 'email_verified'])
       .executeTakeFirst();
 
     if (!user) {
@@ -149,7 +150,10 @@ export async function rotateRefreshToken(
       })
       .execute();
 
-    const accessToken = issueAccessToken(user, memberships);
+    const accessToken = issueAccessToken(
+      { id: user.id, email: user.email, emailVerified: user.email_verified },
+      memberships,
+    );
 
     return {
       accessToken,

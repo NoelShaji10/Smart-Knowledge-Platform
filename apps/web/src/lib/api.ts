@@ -3,6 +3,7 @@ export interface User {
   email: string;
   displayName: string;
   avatarUrl?: string;
+  emailVerified?: boolean;
 }
 
 export interface Workspace {
@@ -421,6 +422,18 @@ export const api = {
   refresh: () => refreshAccessTokenSingleFlight(),
 
   getMe: () => apiRequest<{ user: User }>('/api/v1/auth/me', { method: 'GET' }),
+
+  requestEmailVerification: (data?: { email?: string }) =>
+    apiRequest<{ ok: boolean; message: string; alreadyVerified?: boolean }>('/api/v1/auth/verify-email/request', {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
+  verifyEmail: (token: string) =>
+    apiRequest<{ ok: boolean; message: string; emailVerified: boolean }>('/api/v1/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
 
   logout: async () => {
     try {

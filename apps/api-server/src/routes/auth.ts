@@ -8,8 +8,18 @@ import {
   rotateRefreshToken,
   revokeRefreshTokenByRaw,
   revokeAllUserTokens,
+  verifyAccessToken,
   TokenReuseError,
+  createEmailVerificationChallenge,
+  requestEmailVerificationChallenge,
+  verifyEmailToken,
+  cleanupFailedVerificationChallenge,
+  finalizeVerificationChallengeDelivery,
+  InvalidVerificationTokenError,
+  ExpiredVerificationTokenError,
+  TokenAlreadyConsumedError,
 } from '@knowledge/auth';
+import { getEmailTransport, generateEmailVerificationEmail } from '@knowledge/email';
 import { rateLimiter } from '../middleware/rate-limiter';
 import { authMiddleware } from '../middleware/auth';
 import { rlsMiddleware } from '../middleware/rls';
@@ -57,7 +67,7 @@ authRouter.get('/api/v1/auth/me', authMiddleware, rlsMiddleware, async (req: Req
       return db
         .selectFrom('users')
         .where('id', '=', req.user!.userId)
-        .select(['id', 'email', 'display_name'])
+        .select(['id', 'email', 'display_name', 'email_verified'])
         .executeTakeFirst();
     });
 
@@ -71,6 +81,7 @@ authRouter.get('/api/v1/auth/me', authMiddleware, rlsMiddleware, async (req: Req
         id: userRow.id,
         email: userRow.email,
         displayName: userRow.display_name,
+        emailVerified: Boolean(userRow.email_verified),
       },
     });
   } catch (err) {
@@ -112,6 +123,7 @@ authRouter.post(
           id: user.id,
           email: user.email,
           displayName: user.display_name,
+          emailVerified: false,
         },
         accessToken: loginRes.accessToken,
       });
@@ -261,3 +273,168 @@ authRouter.post('/api/v1/auth/logout-all', async (req: Request, res: Response) =
     res.status(401).json({ error: (err as Error).message || 'Invalid refresh token' });
   }
 });
+
+const verifyEmailRequestSchema = z.object({
+  email: z.string().email().optional(),
+});
+
+authRouter.post(
+  '/api/v1/auth/verify-email/request',
+  rateLimiter({
+    keyPrefix: 'verify-email-req',
+    windowSeconds: env.RATE_LIMIT_WINDOW_SECONDS,
+    maxRequests: 5,
+    failClosed: true,
+    keyExtractor: (req) => {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const payload = verifyAccessToken(authHeader.substring(7));
+          if (payload.sub) return payload.sub as string;
+        } catch {}
+      }
+      return req.body?.email || req.ip || 'unknown';
+    },
+  }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = verifyEmailRequestSchema.parse(req.body || {});
+
+      let targetUserId: string | null = null;
+      let targetEmail: string | null = null;
+
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const payload = verifyAccessToken(authHeader.substring(7));
+          if (payload.sub && payload.email) {
+            targetUserId = payload.sub as string;
+            targetEmail = (payload.email as string).trim().toLowerCase();
+          }
+        } catch {}
+      }
+
+      if (!targetEmail && parsed.email) {
+        targetEmail = parsed.email.trim().toLowerCase();
+      }
+
+      if (!targetEmail) {
+        res.status(400).json({ error: 'Email address is required', code: 'VALIDATION_ERROR' });
+        return;
+      }
+
+      const challengeRes = await requestEmailVerificationChallenge(
+        {
+          userId: targetUserId,
+          email: targetEmail || undefined,
+        },
+        { deferInvalidation: true },
+      );
+
+      if (challengeRes.alreadyVerified) {
+        res.json({ ok: true, message: 'Email is already verified.', alreadyVerified: true });
+        return;
+      }
+
+      if (!challengeRes.challenge || !challengeRes.user) {
+        // Prevent email enumeration by returning a generic response
+        res.json({ ok: true, message: 'If an account exists, a verification email has been sent.' });
+        return;
+      }
+
+      // Render email using template
+      const emailMsg = generateEmailVerificationEmail({
+        recipientEmail: challengeRes.user.email,
+        displayName: challengeRes.user.displayName,
+        rawToken: challengeRes.challenge.rawToken,
+        expiresAt: challengeRes.challenge.expiresAt,
+        webAppUrl: env.WEB_APP_URL,
+        nodeEnv: env.NODE_ENV,
+      });
+
+      // Deliver via EmailTransport abstraction with identity-specific failure cleanup
+      const transport = getEmailTransport();
+      try {
+        await transport.send(emailMsg);
+      } catch (sendErr) {
+        // Safe, identity-specific cleanup: remove the undelivered challenge so it does not
+        // linger or block user recovery. Prior challenges are preserved so the user is not stranded.
+        try {
+          await cleanupFailedVerificationChallenge(challengeRes.challenge.tokenHash);
+        } catch {
+          // Prevent cleanup DB errors from masking original delivery failure
+        }
+        throw sendErr;
+      }
+
+      // Finalize delivery: invalidate any older unconsumed challenges for this user
+      await finalizeVerificationChallengeDelivery(challengeRes.user.id, challengeRes.challenge.tokenHash);
+
+      await emitAuditEvent(null as any, {
+        workspaceId: null,
+        actorId: challengeRes.user.id,
+        action: 'auth.email.verification_requested',
+        resourceType: 'user',
+        resourceId: challengeRes.user.id,
+        metadata: { email: challengeRes.user.email },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.json({ ok: true, message: 'If an account exists, a verification email has been sent.' });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const verifyEmailSchema = z.object({
+  token: z.string().min(1),
+});
+
+authRouter.post(
+  '/api/v1/auth/verify-email',
+  rateLimiter({
+    keyPrefix: 'verify-email-consume',
+    windowSeconds: env.RATE_LIMIT_WINDOW_SECONDS,
+    maxRequests: 10,
+    failClosed: true,
+  }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token } = verifyEmailSchema.parse(req.body);
+
+      const result = await verifyEmailToken(token);
+
+      await emitAuditEvent(null as any, {
+        workspaceId: null,
+        actorId: result.userId,
+        action: 'auth.email.verified',
+        resourceType: 'user',
+        resourceId: result.userId,
+        metadata: { email: result.email },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.json({
+        ok: true,
+        message: 'Email verified successfully',
+        emailVerified: true,
+      });
+    } catch (err) {
+      if (
+        err instanceof InvalidVerificationTokenError ||
+        err instanceof ExpiredVerificationTokenError ||
+        err instanceof TokenAlreadyConsumedError
+      ) {
+        res.status(err.status).json({
+          error: err.message,
+          code: err.code,
+        });
+        return;
+      }
+      next(err);
+    }
+  },
+);

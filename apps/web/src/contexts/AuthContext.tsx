@@ -12,6 +12,7 @@ interface AuthContextType {
   register: (displayName: string, email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<{ ok: boolean; remoteRevoked: boolean }>;
+  refreshUser: () => Promise<User | null>;
   clearError: () => void;
 }
 
@@ -177,6 +178,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { ok: true, remoteRevoked };
   };
 
+  const refreshUser = useCallback(async (): Promise<User | null> => {
+    try {
+      const token = await api.refresh();
+      if (token) {
+        const meRes = await api.getMe();
+        if (meRes.user) {
+          setUser(meRes.user);
+          return meRes.user;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   return (
     <AuthContext.Provider
       value={{
@@ -188,6 +205,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register: handleRegister,
         logout: handleLogout,
         logoutAll: handleLogoutAll,
+        refreshUser,
         clearError,
       }}
     >

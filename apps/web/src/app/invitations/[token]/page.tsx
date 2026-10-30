@@ -27,7 +27,7 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
   const router = useRouter();
   const token = params?.token || '';
 
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, refreshUser } = useAuth();
   const { refreshWorkspaces } = useWorkspace();
 
   const [invitation, setInvitation] = useState<PublicInvitationDetails | null>(null);
@@ -37,6 +37,12 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
   const [accepting, setAccepting] = useState<boolean>(false);
   const [acceptSuccess, setAcceptSuccess] = useState<AcceptInvitationResponse | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  const [emailNotVerified, setEmailNotVerified] = useState<boolean>(false);
+  const [resendingVerification, setResendingVerification] = useState<boolean>(false);
+  const [resendVerificationSuccess, setResendVerificationSuccess] = useState<string | null>(null);
+  const [resendVerificationError, setResendVerificationError] = useState<string | null>(null);
+  const [checkingVerification, setCheckingVerification] = useState<boolean>(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -178,33 +184,77 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
         const code = data?.code;
 
         if (err.status === 403 && code === 'EMAIL_NOT_VERIFIED') {
+          setEmailNotVerified(true);
           setAcceptError(
             'Account email must be verified to accept an email-bound invitation. Authoritative email verification is not supported in this environment.',
           );
         } else if (err.status === 403 && code === 'EMAIL_MISMATCH') {
+          setEmailNotVerified(false);
           setAcceptError(
             `This invitation is intended for a different email address (${invitation?.maskedEmail || 'reserved email'}). You are currently signed in as ${user.email}.`,
           );
         } else if (err.status === 409) {
+          setEmailNotVerified(false);
           setAcceptError(
             err.message || 'This invitation has already been accepted or you are already a member.',
           );
         } else if (err.status === 410) {
+          setEmailNotVerified(false);
           setAcceptError('This invitation has expired or was revoked.');
         } else if (err.status === 429) {
           setAcceptError('Rate limit exceeded. Please wait a moment before trying to accept again.');
         } else if (err.status === 401) {
+          setEmailNotVerified(false);
           setAcceptError('Your session has expired. Please sign in again.');
         } else {
+          setEmailNotVerified(false);
           setAcceptError(
             err.message || 'Failed to accept invitation due to a server error. Please try again.',
           );
         }
       } else {
+        setEmailNotVerified(false);
         setAcceptError('Network error or server unavailable. Please try again.');
       }
     } finally {
       setAccepting(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setResendingVerification(true);
+    setResendVerificationSuccess(null);
+    setResendVerificationError(null);
+    try {
+      await api.requestEmailVerification();
+      setResendVerificationSuccess(`Verification email sent to ${user?.email || 'your email'}. Please check your inbox.`);
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 429) {
+        setResendVerificationError('Too many verification requests. Please wait a moment before trying again.');
+      } else {
+        setResendVerificationError('Failed to send verification email. Please try again.');
+      }
+    } finally {
+      setResendingVerification(false);
+    }
+  };
+
+  const handleCheckAndRetry = async () => {
+    setCheckingVerification(true);
+    setResendVerificationError(null);
+    try {
+      const refreshedUser = await refreshUser();
+      if (refreshedUser?.emailVerified) {
+        setEmailNotVerified(false);
+        setAcceptError(null);
+        await handleAccept();
+      } else {
+        setAcceptError('Your email address is not yet verified. Please click the link sent to your inbox.');
+      }
+    } catch {
+      setAcceptError('Failed to refresh account status. Please try again.');
+    } finally {
+      setCheckingVerification(false);
     }
   };
 
@@ -467,6 +517,39 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
                         <line x1="12" y1="16" x2="12.01" y2="16" />
                       </svg>
                       <div>{acceptError}</div>
+                    </div>
+                  )}
+
+                  {emailNotVerified && (
+                    <div className={styles.verificationPromptBox} role="region" aria-label="Email Verification Required">
+                      {resendVerificationSuccess && (
+                        <div className={styles.successNote} role="status">
+                          {resendVerificationSuccess}
+                        </div>
+                      )}
+                      {resendVerificationError && (
+                        <div className={styles.errorNote} role="alert">
+                          {resendVerificationError}
+                        </div>
+                      )}
+                      <div className={styles.verificationActions}>
+                        <Button
+                          variant="secondary"
+                          onClick={handleResendVerification}
+                          loading={resendingVerification}
+                          disabled={resendingVerification || checkingVerification}
+                        >
+                          Resend Verification Email
+                        </Button>
+                        <Button
+                          variant="primary"
+                          onClick={handleCheckAndRetry}
+                          loading={checkingVerification}
+                          disabled={checkingVerification || resendingVerification}
+                        >
+                          I've Verified, Retry
+                        </Button>
+                      </div>
                     </div>
                   )}
 

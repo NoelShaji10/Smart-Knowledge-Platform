@@ -794,14 +794,14 @@ export async function resolveInvitationToken(rawToken: string): Promise<PublicIn
  */
 export async function acceptInvitation(
   rawToken: string,
-  user: { userId: string; email: string; emailVerified?: boolean | unknown },
+  user: { userId: string; email?: string; emailVerified?: boolean | unknown },
   auditContext?: { ipAddress?: string; userAgent?: string },
 ): Promise<AcceptInvitationResult> {
   if (!rawToken || typeof rawToken !== 'string') {
     throw new InvitationNotFoundError('Invalid invitation token');
   }
 
-  if (!user || typeof user !== 'object' || !user.userId || !user.email) {
+  if (!user || typeof user !== 'object' || !user.userId) {
     throw new UnauthorizedInvitationError('Valid authenticated user is required to accept an invitation');
   }
 
@@ -843,16 +843,26 @@ export async function acceptInvitation(
       throw new ExpiredInvitationError();
     }
 
-    // 3. Email-binding verification (Fail-closed)
+    // 3. Authenticate current user against PostgreSQL and verify email-binding (Fail-closed)
+    const dbUser = await systemDb
+      .selectFrom('users')
+      .where('id', '=', user.userId)
+      .select(['id', 'email', 'email_verified'])
+      .executeTakeFirst();
+
+    if (!dbUser) {
+      throw new UnauthorizedInvitationError('User account not found');
+    }
+
     if (invitation.invitee_email) {
-      // Require an authoritative verification status of exactly boolean true.
-      // Reject false, undefined, null, missing, malformed, or otherwise untrusted verification status.
-      if (user.emailVerified !== true) {
+      // Require an authoritative verification status of exactly boolean true from PostgreSQL.
+      // Reject false, undefined, null, missing, malformed, or stale JWT verification claims.
+      if (dbUser.email_verified !== true) {
         throw new UnverifiedEmailError('Account email must be verified to accept an email-bound invitation');
       }
-      const normalizedSessionEmail = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
+      const normalizedDbEmail = typeof dbUser.email === 'string' ? dbUser.email.trim().toLowerCase() : '';
       const normalizedInviteeEmail = invitation.invitee_email.trim().toLowerCase();
-      if (normalizedSessionEmail !== normalizedInviteeEmail) {
+      if (normalizedDbEmail !== normalizedInviteeEmail) {
         throw new EmailMismatchError('This invitation is intended for a different email address');
       }
     }

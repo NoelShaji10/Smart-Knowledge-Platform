@@ -444,6 +444,15 @@ describe('Workspace Invitations Service & Security Integration Tests', () => {
         displayName: 'Matching User',
       });
 
+      // Mark user as authoritatively verified in PostgreSQL
+      await withSystemContext(async (sDb) => {
+        await sDb
+          .updateTable('users')
+          .set({ email_verified: true })
+          .where('id', '=', matchingUser.id)
+          .execute();
+      });
+
       const result = await acceptInvitation(rawToken, {
         userId: matchingUser.id,
         email: matchingUser.email,
@@ -595,7 +604,15 @@ describe('Workspace Invitations Service & Security Integration Tests', () => {
         email: targetEmail,
       });
 
-      // External User B has verified email, but does NOT match targetEmail
+      // External User B has verified email in PostgreSQL, but does NOT match targetEmail
+      await withSystemContext(async (sDb) => {
+        await sDb
+          .updateTable('users')
+          .set({ email_verified: true })
+          .where('id', '=', externalUserB.id)
+          .execute();
+      });
+
       await expect(
         acceptInvitation(rawToken, {
           userId: externalUserB.id,

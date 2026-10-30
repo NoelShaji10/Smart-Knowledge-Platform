@@ -17,8 +17,20 @@ export interface UsersTable {
   auth_provider: string;
   auth_subject: string;
   password_hash: string | null;
+  email_verified: Generated<boolean>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+}
+
+export interface EmailVerificationTokensTable {
+  id: Generated<string>;
+  sequence_number: Generated<number>;
+  user_id: string;
+  email: string;
+  token_hash: string;
+  expires_at: Date;
+  created_at: Generated<Date>;
+  consumed_at: Date | null;
 }
 
 export interface RefreshTokensTable {
@@ -152,5 +164,6 @@ export interface Database {
   ai_suggestions: AISuggestionsTable;
   comments: CommentsTable;
   audit_events: AuditEventsTable;
+  email_verification_tokens: EmailVerificationTokensTable;
 }
 

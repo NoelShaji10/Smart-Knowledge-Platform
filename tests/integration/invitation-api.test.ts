@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createApiApp } from '../../apps/api-server/src/app';
 import { runMigrations, getSystemDb, withSystemContext } from '@knowledge/database';
 import * as databaseModule from '@knowledge/database';
-import { registerUser, loginUser, issueAccessToken } from '@knowledge/auth';
+import { registerUser, loginUser, issueAccessToken, createEmailVerificationChallenge, verifyEmailToken } from '@knowledge/auth';
 import { createWorkspace } from '../../apps/api-server/src/lib/workspace-service';
 import { getRedisClient } from '@knowledge/redis';
 import { logger } from '@knowledge/config';
@@ -526,6 +526,41 @@ describe('Workspace Invitations HTTP API & Security Integration Tests', () => {
           .executeTakeFirst();
       });
       expect(memberRow).toBeUndefined();
+    });
+
+    it('successfully accepts email-bound invitation after recipient authoritatively verifies email', async () => {
+      const targetEmail = `bound_recipient_verified_${Date.now()}@example.com`;
+
+      const createRes = await request(app)
+        .post(`/api/v1/workspaces/${workspaceId}/invitations`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ role: 'editor', email: targetEmail });
+
+      const { rawToken } = createRes.body;
+
+      // 1. Recipient registers (unverified)
+      const db = getSystemDb();
+      const user = await registerUser(db, {
+        email: targetEmail,
+        password: 'Password123!',
+        displayName: 'Verified Recipient',
+      });
+
+      // 2. Authoritatively verify email
+      const challenge = await createEmailVerificationChallenge(user.id, user.email);
+      await verifyEmailToken(challenge.rawToken);
+
+      // 3. Login to receive token carrying authoritative claim
+      const verifiedToken = (await loginUser(db, { email: user.email, password: 'Password123!' })).accessToken;
+
+      // 4. Acceptance succeeds
+      const acceptRes = await request(app)
+        .post(`/api/v1/invitations/${rawToken}/accept`)
+        .set('Authorization', `Bearer ${verifiedToken}`);
+
+      expect(acceptRes.status).toBe(200);
+      expect(acceptRes.body.status).toBe('accepted');
+      expect(acceptRes.body.role).toBe('editor');
     });
 
     it('rejects email-bound invitation when caller email does not match invitation email', async () => {

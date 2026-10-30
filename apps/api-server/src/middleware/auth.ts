@@ -4,6 +4,7 @@ import { verifyAccessToken } from '@knowledge/auth';
 export interface AuthenticatedUser {
   userId: string;
   email: string;
+  emailVerified: boolean;
   workspaces: Array<{ id: string; role: string }>;
 }
 
@@ -28,6 +29,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     req.user = {
       userId: payload.sub as string,
       email: payload.email as string,
+      emailVerified: Boolean(payload.email_verified),
       workspaces: (payload.workspaces as Array<{ id: string; role: string }>) || [],
     };
     next();

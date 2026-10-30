@@ -266,7 +266,7 @@ invitationRouter.post(
       const sessionUser = {
         userId: req.user!.userId,
         email: req.user!.email,
-        emailVerified: (req.user as any).emailVerified,
+        emailVerified: req.user!.emailVerified,
       };
 
       const result = await invitationService.acceptInvitation(token, sessionUser, {

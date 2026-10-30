@@ -1,0 +1,114 @@
+.container {
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  margin-bottom: var(--space-6);
+  text-align: center;
+}
+
+.heading {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.subtext {
+  font-size: var(--text-sm);
+  color: var(--fg-secondary);
+  margin-top: var(--space-1);
+  line-height: 1.5;
+}
+
+.loadingBox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--fg-secondary);
+}
+
+.successIconBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: oklch(0.65 0.18 145 / 0.15);
+  color: oklch(0.65 0.18 145);
+  margin-bottom: var(--space-4);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.errorMessage {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background-color: var(--danger-subtle);
+  border: 1px solid oklch(0.55 0.2 25 / 0.18);
+  padding: var(--space-3);
+  border-radius: 6px;
+  line-height: 1.4;
+  margin-bottom: var(--space-4);
+}
+
+.successMessage {
+  font-size: var(--text-sm);
+  color: oklch(0.65 0.18 145);
+  background-color: oklch(0.65 0.18 145 / 0.1);
+  border: 1px solid oklch(0.65 0.18 145 / 0.2);
+  padding: var(--space-3);
+  border-radius: 6px;
+  line-height: 1.4;
+  margin-bottom: var(--space-4);
+}
+
+.errorIcon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.actionRow {
+  margin-top: var(--space-4);
+}
+
+.footerText {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+  color: var(--fg-secondary);
+  text-align: center;
+}
+
+.footerLink {
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 3px;
+  transition: color 0.15s ease;
+}
+
+.footerLink:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.footerLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

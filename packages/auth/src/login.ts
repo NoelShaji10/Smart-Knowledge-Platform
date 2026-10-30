@@ -37,7 +37,7 @@ export async function loginUser(dbOrParams: Kysely<Database> | LoginParams, para
       .execute();
 
     const accessToken = issueAccessToken(
-      { id: user.id, email: user.email },
+      { id: user.id, email: user.email, emailVerified: user.email_verified },
       memberships,
     );
 
@@ -48,6 +48,7 @@ export async function loginUser(dbOrParams: Kysely<Database> | LoginParams, para
         id: user.id,
         email: user.email,
         displayName: user.display_name,
+        emailVerified: Boolean(user.email_verified),
         workspaces: memberships,
       },
       accessToken,

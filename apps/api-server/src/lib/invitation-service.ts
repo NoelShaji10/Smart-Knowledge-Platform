@@ -855,15 +855,16 @@ export async function acceptInvitation(
     }
 
     if (invitation.invitee_email) {
-      // Require an authoritative verification status of exactly boolean true from PostgreSQL.
-      // Reject false, undefined, null, missing, malformed, or stale JWT verification claims.
-      if (dbUser.email_verified !== true) {
-        throw new UnverifiedEmailError('Account email must be verified to accept an email-bound invitation');
-      }
       const normalizedDbEmail = typeof dbUser.email === 'string' ? dbUser.email.trim().toLowerCase() : '';
       const normalizedInviteeEmail = invitation.invitee_email.trim().toLowerCase();
       if (normalizedDbEmail !== normalizedInviteeEmail) {
         throw new EmailMismatchError('This invitation is intended for a different email address');
+      }
+
+      // Require an authoritative verification status of exactly boolean true from PostgreSQL.
+      // Reject false, undefined, null, missing, malformed, or stale JWT verification claims.
+      if (dbUser.email_verified !== true) {
+        throw new UnverifiedEmailError('Account email must be verified to accept an email-bound invitation');
       }
     }
 

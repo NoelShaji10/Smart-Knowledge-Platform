@@ -85,6 +85,14 @@ export async function startWorkers() {
   }
 
   logger.info('Background workers listening on all pg-boss queues');
+
+  // Trigger an initial sweep on startup to pick up any stranded jobs
+  try {
+    await reconcilePendingInvitationEmails(boss);
+  } catch (err) {
+    logger.warn('Initial reconciliation sweep encountered an issue', { error: String(err) });
+  }
+
   return boss;
 }
 

@@ -88,12 +88,11 @@ export async function handleSendInvitationEmail(
   const preparation = await withSystemContext(async (db) => {
     let sel = db
       .selectFrom('workspace_invitations')
-      .innerJoin('workspaces', 'workspaces.id', 'workspace_invitations.workspace_id')
-      .leftJoin('users as inviter', 'inviter.id', 'workspace_invitations.inviter_id')
       .where('workspace_invitations.id', '=', invitationId)
       .select([
         'workspace_invitations.id',
         'workspace_invitations.workspace_id',
+        'workspace_invitations.inviter_id',
         'workspace_invitations.invitee_email',
         'workspace_invitations.role',
         'workspace_invitations.status',
@@ -103,15 +102,51 @@ export async function handleSendInvitationEmail(
         'workspace_invitations.email_delivery_attempts',
         'workspace_invitations.claim_id',
         'workspace_invitations.claim_expires_at',
-        'workspaces.name as workspace_name',
-        'inviter.display_name as inviter_name',
       ]);
 
     if (typeof (sel as any).forUpdate === 'function') {
       sel = (sel as any).forUpdate();
     }
 
-    const invitation = await sel.executeTakeFirst();
+    const invitationRow = await sel.executeTakeFirst();
+
+    if (!invitationRow) {
+      return { shouldProceed: false, reason: 'NOT_FOUND' as const };
+    }
+
+    // Resolve workspace name and inviter display name without outer joins on FOR UPDATE
+    let workspaceName = (invitationRow as any)?.workspace_name || 'Knowledge Workspace';
+    let inviterName: string | null = (invitationRow as any)?.inviter_name || null;
+
+    try {
+      const ws = await db
+        .selectFrom('workspaces')
+        .where('id', '=', invitationRow.workspace_id)
+        .select(['name'])
+        .executeTakeFirst();
+      if (ws?.name) {
+        workspaceName = ws.name;
+      }
+
+      if (invitationRow.inviter_id) {
+        const inviter = await db
+          .selectFrom('users')
+          .where('id', '=', invitationRow.inviter_id)
+          .select(['display_name'])
+          .executeTakeFirst();
+        if (inviter?.display_name) {
+          inviterName = inviter.display_name;
+        }
+      }
+    } catch {
+      // Fallback preserved
+    }
+
+    const invitation = {
+      ...invitationRow,
+      workspace_name: workspaceName,
+      inviter_name: inviterName,
+    };
 
     if (!invitation) {
       return { shouldProceed: false, reason: 'NOT_FOUND' as const };

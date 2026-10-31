@@ -27,7 +27,7 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
   const router = useRouter();
   const token = params?.token || '';
 
-  const { user, loading: authLoading, refreshUser } = useAuth();
+  const { user, loading: authLoading, refreshUser, logout } = useAuth();
   const { refreshWorkspaces } = useWorkspace();
 
   const [invitation, setInvitation] = useState<PublicInvitationDetails | null>(null);
@@ -43,6 +43,16 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
   const [resendVerificationSuccess, setResendVerificationSuccess] = useState<string | null>(null);
   const [resendVerificationError, setResendVerificationError] = useState<string | null>(null);
   const [checkingVerification, setCheckingVerification] = useState<boolean>(false);
+
+  const handleSignOut = async () => {
+    try {
+      await logout();
+      setEmailNotVerified(false);
+      setAcceptError(null);
+    } catch {
+      // Ignore logout failure
+    }
+  };
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -183,15 +193,15 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
         const data = err.data as { error?: string; code?: string } | undefined;
         const code = data?.code;
 
-        if (err.status === 403 && code === 'EMAIL_NOT_VERIFIED') {
-          setEmailNotVerified(true);
-          setAcceptError(
-            'Account email must be verified to accept an email-bound invitation. Authoritative email verification is not supported in this environment.',
-          );
-        } else if (err.status === 403 && code === 'EMAIL_MISMATCH') {
+        if (err.status === 403 && code === 'EMAIL_MISMATCH') {
           setEmailNotVerified(false);
           setAcceptError(
-            `This invitation is intended for a different email address (${invitation?.maskedEmail || 'reserved email'}). You are currently signed in as ${user.email}.`,
+            `This invitation is intended for ${invitation?.maskedEmail || 'a different email'}. You are currently signed in as ${user.email}. Please switch accounts to accept.`,
+          );
+        } else if (err.status === 403 && code === 'EMAIL_NOT_VERIFIED') {
+          setEmailNotVerified(true);
+          setAcceptError(
+            `Your email address (${user.email}) must be verified before accepting this invitation. Please check your inbox for the verification link.`,
           );
         } else if (err.status === 409) {
           setEmailNotVerified(false);
@@ -479,9 +489,8 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
                   </svg>
                   <div>
                     <strong>Email-Bound Invitation:</strong> This invitation is restricted to{' '}
-                    <strong>{invitation.maskedEmail}</strong>. Authoritative email verification is not
-                    currently established in this environment, so accepting email-bound invitations is
-                    strictly blocked by security policy.
+                    <strong>{invitation.maskedEmail}</strong>. You must be signed in with this verified email
+                    account to accept the invitation.
                   </div>
                 </div>
               )}
@@ -494,8 +503,17 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
               ) : user ? (
                 <>
                   <div className={styles.sessionBanner}>
-                    <span>Signed in as</span>
-                    <span className={styles.sessionEmail}>{user.email}</span>
+                    <div>
+                      <span>Signed in as </span>
+                      <span className={styles.sessionEmail}>{user.email}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      className={styles.switchAccountButton}
+                    >
+                      Sign Out / Switch Account
+                    </button>
                   </div>
 
                   {acceptError && (

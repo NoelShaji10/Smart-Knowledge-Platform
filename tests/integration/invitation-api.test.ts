@@ -657,9 +657,13 @@ describe('Workspace Invitations HTTP API & Security Integration Tests', () => {
         await redis.del(k);
       }
 
-      // 1. Send sequential requests up to the 60 request limit
-      for (let i = 0; i < 60; i++) {
-        const res = await request(app).get(`/api/v1/invitations/unresolved-token-seq-${i}`);
+      // 1. Send requests up to the 60 request limit concurrently to avoid 60s window expiration under heavy load
+      const results = await Promise.all(
+        Array.from({ length: 60 }, (_, i) =>
+          request(app).get(`/api/v1/invitations/unresolved-token-seq-${i}`)
+        )
+      );
+      for (const res of results) {
         expect([404, 200]).toContain(res.status);
       }
 

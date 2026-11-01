@@ -6,12 +6,15 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button, Input } from '@/components/ui';
+import { getSafeReturnUrl } from '@/lib/safeRedirect';
 import styles from './page.module.css';
 
 function VerifyEmailContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const token = searchParams.get('token');
+  const rawReturnUrl = searchParams.get('returnUrl');
+  const safeReturnUrl = getSafeReturnUrl(rawReturnUrl);
 
   const { user, refreshUser } = useAuth();
 
@@ -86,7 +89,10 @@ function VerifyEmailContent() {
     setResendError(null);
 
     try {
-      await api.requestEmailVerification({ email: resendEmail.trim() });
+      await api.requestEmailVerification({
+        email: resendEmail.trim(),
+        returnUrl: safeReturnUrl || undefined,
+      });
       setResendSuccess('If an account exists, a new verification link has been sent to your email.');
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 429) {
@@ -139,7 +145,11 @@ function VerifyEmailContent() {
         </div>
 
         <div className={styles.actionRow}>
-          {user ? (
+          {safeReturnUrl ? (
+            <Button variant="primary" onClick={() => router.push(safeReturnUrl)} fullWidth>
+              Continue to Invitation
+            </Button>
+          ) : user ? (
             <Button variant="primary" onClick={() => router.push('/workspaces')} fullWidth>
               Go to Workspaces
             </Button>
@@ -216,7 +226,10 @@ function VerifyEmailContent() {
 
       <div className={styles.footerText}>
         <span>Back to </span>
-        <Link href="/login" className={styles.footerLink}>
+        <Link
+          href={safeReturnUrl ? `/login?returnUrl=${encodeURIComponent(safeReturnUrl)}` : '/login'}
+          className={styles.footerLink}
+        >
           Sign in
         </Link>
       </div>

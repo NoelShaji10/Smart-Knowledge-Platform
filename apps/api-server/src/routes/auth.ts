@@ -19,7 +19,7 @@ import {
   ExpiredVerificationTokenError,
   TokenAlreadyConsumedError,
 } from '@knowledge/auth';
-import { getEmailTransport, generateEmailVerificationEmail } from '@knowledge/email';
+import { getEmailTransport, generateEmailVerificationEmail, getSafeReturnUrl } from '@knowledge/email';
 import { rateLimiter } from '../middleware/rate-limiter';
 import { authMiddleware } from '../middleware/auth';
 import { rlsMiddleware } from '../middleware/rls';
@@ -49,6 +49,7 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   displayName: z.string().min(1),
+  returnUrl: z.string().optional(),
 });
 
 const loginSchema = z.object({
@@ -99,7 +100,7 @@ authRouter.post(
   }),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { email, password, displayName } = registerSchema.parse(req.body);
+      const { email, password, displayName, returnUrl } = registerSchema.parse(req.body);
 
       const user = await registerUser({ email, password, displayName });
 
@@ -118,6 +119,43 @@ authRouter.post(
         userAgent: req.get('user-agent'),
       });
 
+      // Automatically create and dispatch an initial email verification challenge
+      let verificationEmailSent = false;
+      try {
+        const safeReturnUrl = getSafeReturnUrl(returnUrl);
+        const challenge = await createEmailVerificationChallenge(
+          user.id,
+          user.email,
+          { deferInvalidation: true },
+        );
+
+        const emailMsg = generateEmailVerificationEmail({
+          recipientEmail: user.email,
+          displayName: user.display_name,
+          rawToken: challenge.rawToken,
+          expiresAt: challenge.expiresAt,
+          webAppUrl: env.WEB_APP_URL,
+          nodeEnv: env.NODE_ENV,
+          returnUrl: safeReturnUrl || undefined,
+        });
+
+        const transport = getEmailTransport();
+        try {
+          await transport.send(emailMsg);
+          await finalizeVerificationChallengeDelivery(user.id, challenge.tokenHash);
+          verificationEmailSent = true;
+        } catch (sendErr) {
+          // If delivery fails, clean up undelivered challenge so an unusable challenge does not linger
+          try {
+            await cleanupFailedVerificationChallenge(challenge.tokenHash);
+          } catch {
+            // Prevent cleanup DB errors from masking original delivery failure
+          }
+        }
+      } catch {
+        // If challenge creation itself fails, registration still succeeds
+      }
+
       res.status(201).json({
         user: {
           id: user.id,
@@ -126,6 +164,10 @@ authRouter.post(
           emailVerified: false,
         },
         accessToken: loginRes.accessToken,
+        verificationEmailSent,
+        message: verificationEmailSent
+          ? 'Registration successful. A verification email has been sent to your inbox.'
+          : 'Registration successful. Please request a verification email to verify your account.',
       });
     } catch (err) {
       next(err);
@@ -276,6 +318,7 @@ authRouter.post('/api/v1/auth/logout-all', async (req: Request, res: Response) =
 
 const verifyEmailRequestSchema = z.object({
   email: z.string().email().optional(),
+  returnUrl: z.string().optional(),
 });
 
 authRouter.post(
@@ -342,6 +385,8 @@ authRouter.post(
         return;
       }
 
+      const safeReturnUrl = getSafeReturnUrl(parsed.returnUrl);
+
       // Render email using template
       const emailMsg = generateEmailVerificationEmail({
         recipientEmail: challengeRes.user.email,
@@ -350,6 +395,7 @@ authRouter.post(
         expiresAt: challengeRes.challenge.expiresAt,
         webAppUrl: env.WEB_APP_URL,
         nodeEnv: env.NODE_ENV,
+        returnUrl: safeReturnUrl || undefined,
       });
 
       // Deliver via EmailTransport abstraction with identity-specific failure cleanup

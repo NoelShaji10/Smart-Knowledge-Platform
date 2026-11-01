@@ -1,13 +1,25 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import request from 'supertest';
 import { createApiApp } from '../../apps/api-server/src/app';
 import { runMigrations, getSystemDb, withSystemContext } from '@knowledge/database';
+import { getRedisClient } from '@knowledge/redis';
+import * as emailModule from '@knowledge/email';
 
 describe('Auth Flow & Session Persistence Integration Tests', () => {
   const app = createApiApp();
   let isDbConnected = false;
 
   beforeAll(async () => {
+    vi.spyOn(emailModule, 'getEmailTransport').mockReturnValue(new emailModule.MockEmailTransport());
+
+    try {
+      const redis = getRedisClient();
+      const keys = await redis.keys('rate:register*');
+      if (keys.length > 0) {
+        await redis.del(...keys);
+      }
+    } catch {}
+
     try {
       await runMigrations();
       isDbConnected = true;
@@ -44,7 +56,7 @@ describe('Auth Flow & Session Persistence Integration Tests', () => {
 
     const cookies = res.get('Set-Cookie');
     expect(cookies).toBeDefined();
-    refreshCookie = cookies.find((c: string) => c.startsWith('refreshToken=')) || '';
+    refreshCookie = cookies?.find((c: string) => c.startsWith('refreshToken=')) || '';
     expect(refreshCookie).toContain('HttpOnly');
   });
 
@@ -81,7 +93,7 @@ describe('Auth Flow & Session Persistence Integration Tests', () => {
     accessToken = res.body.accessToken;
 
     const cookies = res.get('Set-Cookie');
-    refreshCookie = cookies.find((c: string) => c.startsWith('refreshToken=')) || '';
+    refreshCookie = cookies?.find((c: string) => c.startsWith('refreshToken=')) || '';
 
     // Verify newly rotated token successfully hydrates /auth/me profile
     const meRes = await request(app)

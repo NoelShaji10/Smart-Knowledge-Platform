@@ -83,7 +83,7 @@ function RegisterForm() {
     setSubmitting(true);
 
     try {
-      await register(displayName.trim(), email.trim(), password);
+      await register(displayName.trim(), email.trim(), password, safeReturnUrl || undefined);
 
       // If a safe return destination was requested, navigate directly there
       if (safeReturnUrl) {

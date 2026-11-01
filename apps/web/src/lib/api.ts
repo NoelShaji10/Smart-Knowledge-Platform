@@ -413,8 +413,8 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  register: (data: { displayName: string; email: string; password: string }) =>
-    apiRequest<AuthResponse>('/api/v1/auth/register', {
+  register: (data: { displayName: string; email: string; password: string; returnUrl?: string }) =>
+    apiRequest<AuthResponse & { verificationEmailSent?: boolean; message?: string }>('/api/v1/auth/register', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -423,7 +423,7 @@ export const api = {
 
   getMe: () => apiRequest<{ user: User }>('/api/v1/auth/me', { method: 'GET' }),
 
-  requestEmailVerification: (data?: { email?: string }) =>
+  requestEmailVerification: (data?: { email?: string; returnUrl?: string }) =>
     apiRequest<{ ok: boolean; message: string; alreadyVerified?: boolean }>('/api/v1/auth/verify-email/request', {
       method: 'POST',
       body: JSON.stringify(data || {}),

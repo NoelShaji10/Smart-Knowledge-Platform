@@ -43,14 +43,20 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
   const [resendVerificationSuccess, setResendVerificationSuccess] = useState<string | null>(null);
   const [resendVerificationError, setResendVerificationError] = useState<string | null>(null);
   const [checkingVerification, setCheckingVerification] = useState<boolean>(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  const returnUrl = `/invitations/${encodeURIComponent(token)}`;
+  const loginUrl = `/login?returnUrl=${encodeURIComponent(returnUrl)}`;
+  const registerUrl = `/register?returnUrl=${encodeURIComponent(returnUrl)}`;
 
   const handleSignOut = async () => {
+    setSignOutError(null);
     try {
       await logout();
       setEmailNotVerified(false);
       setAcceptError(null);
     } catch {
-      // Ignore logout failure
+      setSignOutError('Failed to sign out. Please try again.');
     }
   };
 
@@ -236,7 +242,7 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
     setResendVerificationSuccess(null);
     setResendVerificationError(null);
     try {
-      await api.requestEmailVerification();
+      await api.requestEmailVerification({ returnUrl });
       setResendVerificationSuccess(`Verification email sent to ${user?.email || 'your email'}. Please check your inbox.`);
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 429) {
@@ -291,10 +297,6 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
         return 'Viewer access allows viewing published workspace documents and comments.';
     }
   };
-
-  const returnUrl = `/invitations/${encodeURIComponent(token)}`;
-  const loginUrl = `/login?returnUrl=${encodeURIComponent(returnUrl)}`;
-  const registerUrl = `/register?returnUrl=${encodeURIComponent(returnUrl)}`;
 
   return (
     <main id="main-content" className={styles.pageWrapper}>
@@ -515,6 +517,28 @@ export default function InvitationAcceptancePage({ params }: PageProps) {
                       Sign Out / Switch Account
                     </button>
                   </div>
+
+                  {signOutError && (
+                    <div className={styles.errorBox} role="alert">
+                      <svg
+                        className={styles.errorIcon}
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                      </svg>
+                      <div>{signOutError}</div>
+                    </div>
+                  )}
 
                   {acceptError && (
                     <div className={styles.errorBox} role="alert">

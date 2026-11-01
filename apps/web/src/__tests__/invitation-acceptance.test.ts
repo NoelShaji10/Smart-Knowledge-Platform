@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act } from 'react';
+import React, { act, useState, useCallback } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api, ApiError, PublicInvitationDetails, AcceptInvitationResponse } from '../lib/api';
@@ -112,6 +112,58 @@ describe('Task 4: Workspace Invitation Acceptance Flow & Security Tests', () => 
     });
   }
 
+  function StatefulTestHarness({
+    initialUser,
+    token,
+    mockLogout,
+  }: {
+    initialUser: typeof mockUser | null;
+    token: string;
+    mockLogout?: () => Promise<void>;
+  }) {
+    const [currentUser, setCurrentUser] = useState(initialUser);
+    const logout = useCallback(async () => {
+      if (mockLogout) {
+        await mockLogout();
+      }
+      setCurrentUser(null);
+    }, [mockLogout]);
+
+    return React.createElement(
+      AuthContext.Provider,
+      {
+        value: {
+          user: currentUser,
+          loading: false,
+          isNetworkError: false,
+          error: null,
+          login: vi.fn(),
+          register: vi.fn(),
+          logout,
+          logoutAll: vi.fn(),
+          refreshUser: vi.fn(),
+          clearError: vi.fn(),
+        } as any,
+      },
+      React.createElement(
+        WorkspaceContext.Provider,
+        {
+          value: {
+            workspaces: [],
+            activeWorkspace: null,
+            userRole: null,
+            loading: false,
+            error: null,
+            refreshWorkspaces: mockRefreshWorkspaces,
+            loadWorkspace: vi.fn(),
+            createWorkspace: vi.fn(),
+          } as any,
+        },
+        React.createElement(InvitationAcceptancePage, { params: { token } }),
+      ),
+    );
+  }
+
   // =========================================================================
   // 1. Safe Return URL & Open Redirect Prevention
   // =========================================================================
@@ -208,7 +260,7 @@ describe('Task 4: Workspace Invitation Acceptance Flow & Security Tests', () => 
       expect(container.textContent).toContain('Email-Bound Invitation');
       expect(container.textContent).toContain('i***r@example.com');
       expect(container.textContent).toContain(
-        'Authoritative email verification is not currently established in this environment, so accepting email-bound invitations is strictly blocked by security policy',
+        'You must be signed in with this verified email account to accept the invitation.',
       );
     });
 
@@ -481,7 +533,7 @@ describe('Task 4: Workspace Invitation Acceptance Flow & Security Tests', () => 
 
       expect(mockPush).not.toHaveBeenCalled();
       expect(container.textContent).toContain(
-        'Account email must be verified to accept an email-bound invitation. Authoritative email verification is not supported in this environment.',
+        `Your email address (${mockUser.email}) must be verified before accepting this invitation. Please check your inbox for the verification link.`,
       );
     });
 
@@ -508,7 +560,7 @@ describe('Task 4: Workspace Invitation Acceptance Flow & Security Tests', () => 
 
       expect(mockPush).not.toHaveBeenCalled();
       expect(container.textContent).toContain(
-        'This invitation is intended for a different email address (i***r@example.com). You are currently signed in as invited.user@example.com.',
+        `This invitation is intended for i***r@example.com. You are currently signed in as ${mockUser.email}. Please switch accounts to accept.`,
       );
     });
 
@@ -624,6 +676,123 @@ describe('Task 4: Workspace Invitation Acceptance Flow & Security Tests', () => 
       await renderPage('tok_second');
 
       expect(aborted).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // 6. REV-P51-01: Account Switching & Sign Out Interaction
+  // =========================================================================
+  describe('REV-P51-01: Account Switching & Sign Out Interaction', () => {
+    it('successfully logs out, removes session banner, and presents unauthenticated actions preserving returnUrl', async () => {
+      const token = 'tok_switch_account_test';
+      vi.spyOn(api, 'resolveInvitation').mockResolvedValue({
+        invitation: mockEmailBoundInvitation,
+      });
+      const mockAccept = vi.spyOn(api, 'acceptWorkspaceInvitation');
+      const mockLogout = vi.fn().mockResolvedValue(undefined);
+
+      await act(async () => {
+        root.render(
+          React.createElement(StatefulTestHarness, {
+            initialUser: mockUser,
+            token,
+            mockLogout,
+          }),
+        );
+      });
+
+      // Verify authenticated session banner is present initially
+      expect(container.textContent).toContain('Signed in as');
+      expect(container.textContent).toContain(mockUser.email);
+      expect(container.textContent).not.toContain('Sign In to Accept');
+
+      const switchBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Sign Out / Switch Account'),
+      );
+      expect(switchBtn).toBeDefined();
+
+      // Click "Sign Out / Switch Account"
+      await act(async () => {
+        switchBtn?.click();
+      });
+
+      // 4. Verify clicking the button calls the actual logout action
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+
+      // 5. Verify the authenticated session banner disappears after logout
+      expect(container.textContent).not.toContain('Signed in as');
+      expect(container.textContent).not.toContain(mockUser.email);
+
+      // 6. Verify the unauthenticated sign-in and registration actions become available
+      expect(container.textContent).toContain('Sign In to Accept');
+      expect(container.textContent).toContain('Create an account');
+
+      // 7. Verify the original invitation token and return URL are preserved
+      const expectedReturnUrl = `/invitations/${encodeURIComponent(token)}`;
+      const expectedLoginUrl = `/login?returnUrl=${encodeURIComponent(expectedReturnUrl)}`;
+      const expectedRegisterUrl = `/register?returnUrl=${encodeURIComponent(expectedReturnUrl)}`;
+
+      const signInBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Sign In to Accept'),
+      );
+      expect(signInBtn).toBeDefined();
+
+      await act(async () => {
+        signInBtn?.click();
+      });
+      expect(mockPush).toHaveBeenCalledWith(expectedLoginUrl);
+
+      const registerLink = Array.from(container.querySelectorAll('a')).find((a) =>
+        a.textContent?.includes('Create an account'),
+      );
+      expect(registerLink).toBeDefined();
+      expect(registerLink?.getAttribute('href')).toBe(expectedRegisterUrl);
+
+      // 8. Verify invitation acceptance is not triggered automatically after logout
+      expect(mockAccept).not.toHaveBeenCalled();
+    });
+
+    it('handles logout failure safely without falsely indicating successful account switching', async () => {
+      const token = 'tok_switch_account_fail';
+      vi.spyOn(api, 'resolveInvitation').mockResolvedValue({
+        invitation: mockEmailBoundInvitation,
+      });
+      const mockLogout = vi.fn().mockRejectedValue(new Error('Network error during logout'));
+
+      await act(async () => {
+        root.render(
+          React.createElement(StatefulTestHarness, {
+            initialUser: mockUser,
+            token,
+            mockLogout,
+          }),
+        );
+      });
+
+      expect(container.textContent).toContain('Signed in as');
+      expect(container.textContent).toContain(mockUser.email);
+
+      const switchBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Sign Out / Switch Account'),
+      );
+      expect(switchBtn).toBeDefined();
+
+      await act(async () => {
+        switchBtn?.click();
+      });
+
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+
+      // Session banner MUST STILL be present because logout failed
+      expect(container.textContent).toContain('Signed in as');
+      expect(container.textContent).toContain(mockUser.email);
+
+      // Error message is displayed to user
+      expect(container.textContent).toContain('Failed to sign out. Please try again.');
+
+      // Unauthenticated actions MUST NOT be shown
+      expect(container.textContent).not.toContain('Sign In to Accept');
+      expect(container.textContent).not.toContain('Create an account');
     });
   });
 });

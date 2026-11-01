@@ -20,6 +20,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    env: {
+      EMAIL_PROVIDER: 'mock',
+    },
     include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'scripts/**/*.test.ts', 'tests/**/*.test.ts'],
   },
 });

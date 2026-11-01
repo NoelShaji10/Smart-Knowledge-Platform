@@ -9,7 +9,7 @@ interface AuthContextType {
   isNetworkError: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<User>;
-  register: (displayName: string, email: string, password: string) => Promise<User>;
+  register: (displayName: string, email: string, password: string, returnUrl?: string) => Promise<User>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<{ ok: boolean; remoteRevoked: boolean }>;
   refreshUser: () => Promise<User | null>;
@@ -129,10 +129,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const handleRegister = async (displayName: string, email: string, password: string): Promise<User> => {
+  const handleRegister = async (
+    displayName: string,
+    email: string,
+    password: string,
+    returnUrl?: string,
+  ): Promise<User> => {
     clearError();
     try {
-      const res = await api.register({ displayName, email, password });
+      const res = await api.register({ displayName, email, password, returnUrl });
       setAccessToken(res.accessToken);
       setUser(res.user);
       return res.user;

@@ -1,0 +1,21 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "paths": {
+      "@knowledge/auth": ["packages/auth/src/index.ts"],
+      "@knowledge/database": ["packages/database/src/index.ts"],
+      "@knowledge/config": ["packages/config/src/index.ts"],
+      "@knowledge/types": ["packages/types/src/index.ts"],
+      "@knowledge/redis": ["packages/redis/src/index.ts"],
+      "@knowledge/storage": ["packages/storage/src/index.ts"],
+      "@knowledge/jobs": ["packages/jobs/src/index.ts"],
+      "@knowledge/ai-gateway": ["packages/ai-gateway/src/index.ts"],
+      "@knowledge/vector-store": ["packages/vector-store/src/index.ts"],
+      "@knowledge/email": ["packages/email/src/index.ts"],
+      "@/*": ["apps/web/src/*"]
+    },
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}

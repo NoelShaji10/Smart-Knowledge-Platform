@@ -128,7 +128,8 @@ describe('Phase 5 Task 6: End-to-End Email Delivery & Invitation Verification Su
       });
       expect(userBefore?.email_verified).toBe(false);
 
-      // 3. Request email verification challenge
+      // 3. Request email verification challenge (clearing initial registration email first)
+      mockTransport.clearSentMessages();
       const reqRes = await request(app)
         .post('/api/v1/auth/verify-email/request')
         .send({ email: testEmail });

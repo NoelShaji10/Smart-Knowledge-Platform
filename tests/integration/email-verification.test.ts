@@ -62,9 +62,11 @@ describe('Phase 5 Task 5: Authoritative Email Verification & Invitation Acceptan
   beforeEach(async () => {
     try {
       const redis = getRedisClient();
-      const keys = await redis.keys('rate:verify-email*');
-      if (keys.length > 0) {
-        await redis.del(...keys);
+      const verifyKeys = await redis.keys('rate:verify-email*');
+      const regKeys = await redis.keys('rate:register*');
+      const keysToDelete = [...verifyKeys, ...regKeys];
+      if (keysToDelete.length > 0) {
+        await redis.del(...keysToDelete);
       }
     } catch {}
   });
@@ -1221,6 +1223,289 @@ describe('Phase 5 Task 5: Authoritative Email Verification & Invitation Acceptan
 
       expect(acceptRes.status).toBe(410);
       expect(acceptRes.body.code).toBe('INVITATION_REVOKED');
+    });
+  });
+
+  describe('6. REV-P51-02 & REV-P51-03: Registration Verification Challenge & Return URL Flow', () => {
+    it('automatically generates and delivers verification challenge on registration', async () => {
+      const email = `reg_verify_auto_${Date.now()}@example.com`;
+      mockTransport.clearSentMessages();
+
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          displayName: 'Auto Verify User',
+          email,
+          password: 'Password123!',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.user.emailVerified).toBe(false);
+      expect(res.body.verificationEmailSent).toBe(true);
+      expect(res.body.message).toContain('verification email has been sent');
+
+      // Delivered email was received by mock transport
+      const sent = mockTransport.getSentMessages().find((m) => m.to === email);
+      expect(sent).toBeDefined();
+      expect(sent?.subject).toContain('Verify your email');
+      expect(sent?.html).toContain('verify-email?token=');
+
+      // Token hash is stored in database and NEVER raw secret
+      const match = (sent?.html || '').match(/token=([a-f0-9]+)/);
+      expect(match).toBeTruthy();
+      const rawToken = match![1];
+
+      const tokenRows = await withSystemContext(async (sysDb) => {
+        return sysDb
+          .selectFrom('email_verification_tokens')
+          .where('user_id', '=', res.body.user.id)
+          .selectAll()
+          .execute();
+      });
+      expect(tokenRows).toHaveLength(1);
+      expect(tokenRows[0].token_hash).toBe(hashToken(rawToken));
+      expect(tokenRows[0].token_hash).not.toBe(rawToken);
+
+      // Verify the delivered token
+      const verifyRes = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token: rawToken });
+      expect(verifyRes.status).toBe(200);
+      expect(verifyRes.body.emailVerified).toBe(true);
+
+      // Confirm DB state is updated
+      const userRow = await withSystemContext(async (sysDb) => {
+        return sysDb
+          .selectFrom('users')
+          .where('id', '=', res.body.user.id)
+          .select(['email_verified'])
+          .executeTakeFirst();
+      });
+      expect(userRow?.email_verified).toBe(true);
+    });
+
+    it('registration succeeds when email transport fails, safely cleans up undelivered challenge, and allows subsequent resend', async () => {
+      const email = `reg_transport_fail_${Date.now()}@example.com`;
+      mockTransport.clearSentMessages();
+      mockTransport.failNext(new Error('SMTP service unavailable'));
+
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          displayName: 'Transport Fail User',
+          email,
+          password: 'Password123!',
+        });
+
+      // Registration itself must succeed, preventing account creation loss
+      expect(res.status).toBe(201);
+      expect(res.body.user.id).toBeDefined();
+      expect(res.body.verificationEmailSent).toBe(false);
+      expect(res.body.message).toContain('Please request a verification email');
+
+      // Database user exists and is unverified
+      const userRow = await withSystemContext(async (sysDb) => {
+        return sysDb
+          .selectFrom('users')
+          .where('id', '=', res.body.user.id)
+          .select(['email_verified'])
+          .executeTakeFirst();
+      });
+      expect(userRow?.email_verified).toBe(false);
+
+      // Undelivered challenge was safely cleaned up (no unconsumable token lingers)
+      const tokens = await withSystemContext(async (sysDb) => {
+        return sysDb
+          .selectFrom('email_verification_tokens')
+          .where('user_id', '=', res.body.user.id)
+          .selectAll()
+          .execute();
+      });
+      expect(tokens).toHaveLength(0);
+
+      // User subsequently requests a verification email once transport is healthy
+      const resendRes = await request(app)
+        .post('/api/v1/auth/verify-email/request')
+        .send({ email });
+      expect(resendRes.status).toBe(200);
+
+      const resent = mockTransport.getSentMessages().find((m) => m.to === email);
+      expect(resent).toBeDefined();
+      const match = (resent?.html || '').match(/token=([a-f0-9]+)/);
+      expect(match).toBeTruthy();
+
+      // Successfully verifies account with new challenge
+      const verifyRes = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token: match![1] });
+      expect(verifyRes.status).toBe(200);
+      expect(verifyRes.body.emailVerified).toBe(true);
+    });
+
+    it('preserves valid internal returnUrl in verification email during registration', async () => {
+      const email = `reg_return_url_${Date.now()}@example.com`;
+      const invitationToken = `tok_invite_return_${Date.now()}`;
+      const returnUrl = `/invitations/${invitationToken}`;
+      mockTransport.clearSentMessages();
+
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          displayName: 'Return URL User',
+          email,
+          password: 'Password123!',
+          returnUrl,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.verificationEmailSent).toBe(true);
+
+      const sent = mockTransport.getSentMessages().find((m) => m.to === email);
+      expect(sent).toBeDefined();
+      // Contains both token and sanitized returnUrl
+      expect(sent?.html).toContain('verify-email?token=');
+      expect(sent?.html).toContain(`&amp;returnUrl=${encodeURIComponent(returnUrl)}`);
+    });
+
+    it('sanitizes and rejects unsafe external returnUrl during registration and verification request', async () => {
+      const email = `reg_unsafe_url_${Date.now()}@example.com`;
+      mockTransport.clearSentMessages();
+
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          displayName: 'Unsafe URL User',
+          email,
+          password: 'Password123!',
+          returnUrl: '//evil.com/phishing',
+        });
+
+      expect(res.status).toBe(201);
+      const sent = mockTransport.getSentMessages().find((m) => m.to === email);
+      expect(sent).toBeDefined();
+      // Unsafe return URL was discarded to prevent open redirect
+      expect(sent?.html).not.toContain('returnUrl');
+      expect(sent?.html).toContain('verify-email?token=');
+    });
+
+    it('preserves valid returnUrl in explicit resend request', async () => {
+      const email = `resend_return_url_${Date.now()}@example.com`;
+      await registerUser(db, {
+        email,
+        password: 'Password123!',
+        displayName: 'Resend Return User',
+      });
+
+      mockTransport.clearSentMessages();
+      const returnUrl = '/invitations/inv_custom_123';
+      const res = await request(app)
+        .post('/api/v1/auth/verify-email/request')
+        .send({ email, returnUrl });
+
+      expect(res.status).toBe(200);
+      const sent = mockTransport.getSentMessages().find((m) => m.to === email);
+      expect(sent).toBeDefined();
+      expect(sent?.html).toContain(`&amp;returnUrl=${encodeURIComponent(returnUrl)}`);
+    });
+
+    it('rejects email-bound invitation acceptance with 403 EMAIL_MISMATCH even if account is unverified', async () => {
+      const boundTargetEmail = `bound_target_${Date.now()}@example.com`;
+      const wrongEmail = `wrong_unverified_${Date.now()}@example.com`;
+
+      // 1. Create invitation bound to boundTargetEmail
+      const createRes = await request(app)
+        .post(`/api/v1/workspaces/${workspaceId}/invitations`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ role: 'editor', email: boundTargetEmail });
+      const { rawToken } = createRes.body;
+
+      // 2. Unverified user with wrongEmail logs in
+      const wrongUser = await registerUser(db, {
+        email: wrongEmail,
+        password: 'Password123!',
+        displayName: 'Wrong Email User',
+      });
+      const wrongToken = (
+        await loginUser(db, { email: wrongUser.email, password: 'Password123!' })
+      ).accessToken;
+
+      // 3. User attempts to accept invitation
+      const acceptRes = await request(app)
+        .post(`/api/v1/invitations/${rawToken}/accept`)
+        .set('Authorization', `Bearer ${wrongToken}`);
+
+      // Must be 403 EMAIL_MISMATCH (not 403 EMAIL_NOT_VERIFIED) because email check takes precedence
+      expect(acceptRes.status).toBe(403);
+      expect(acceptRes.body.code).toBe('EMAIL_MISMATCH');
+    });
+
+    it('executes the complete invitation -> register -> verify -> accept end-to-end journey', async () => {
+      const inviteeEmail = `journey_invitee_${Date.now()}@example.com`;
+      mockTransport.clearSentMessages();
+
+      // 1. Owner creates email-bound invitation
+      const createRes = await request(app)
+        .post(`/api/v1/workspaces/${workspaceId}/invitations`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ role: 'editor', email: inviteeEmail });
+      expect(createRes.status).toBe(201);
+      const { rawToken: inviteToken } = createRes.body;
+
+      // 2. Invitee receives link and registers with returnUrl
+      const inviteReturnUrl = `/invitations/${inviteToken}`;
+      const regRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          displayName: 'Journey User',
+          email: inviteeEmail,
+          password: 'Password123!',
+          returnUrl: inviteReturnUrl,
+        });
+      expect(regRes.status).toBe(201);
+      const userAccessToken = regRes.body.accessToken;
+
+      // 3. Invitee attempts to accept before email verification -> blocked with 403 EMAIL_NOT_VERIFIED
+      const earlyAcceptRes = await request(app)
+        .post(`/api/v1/invitations/${inviteToken}/accept`)
+        .set('Authorization', `Bearer ${userAccessToken}`);
+      expect(earlyAcceptRes.status).toBe(403);
+      expect(earlyAcceptRes.body.code).toBe('EMAIL_NOT_VERIFIED');
+
+      // 4. Invitee gets verification token from delivered email
+      const sentMsg = mockTransport.getSentMessages().find((m) => m.to === inviteeEmail);
+      expect(sentMsg).toBeDefined();
+      expect(sentMsg?.html).toContain(`&amp;returnUrl=${encodeURIComponent(inviteReturnUrl)}`);
+      const tokenMatch = (sentMsg?.html || '').match(/token=([a-f0-9]+)/);
+      expect(tokenMatch).toBeTruthy();
+      const verificationToken = tokenMatch![1];
+
+      // 5. Invitee verifies email token
+      const verifyRes = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token: verificationToken });
+      expect(verifyRes.status).toBe(200);
+      expect(verifyRes.body.emailVerified).toBe(true);
+
+      // 6. Invitee returns to invitation page and clicks accept
+      const finalAcceptRes = await request(app)
+        .post(`/api/v1/invitations/${inviteToken}/accept`)
+        .set('Authorization', `Bearer ${userAccessToken}`);
+      expect(finalAcceptRes.status).toBe(200);
+      expect(finalAcceptRes.body.status).toBe('accepted');
+      expect(finalAcceptRes.body.role).toBe('editor');
+      expect(finalAcceptRes.body.workspaceId).toBe(workspaceId);
+
+      // 7. Verify workspace membership in PostgreSQL
+      const member = await withSystemContext(async (sysDb) => {
+        return sysDb
+          .selectFrom('workspace_members')
+          .where('workspace_id', '=', workspaceId)
+          .where('user_id', '=', regRes.body.user.id)
+          .selectAll()
+          .executeTakeFirst();
+      });
+      expect(member).toBeDefined();
+      expect(member?.role).toBe('editor');
     });
   });
 });

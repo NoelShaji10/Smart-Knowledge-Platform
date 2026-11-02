@@ -125,17 +125,19 @@ export async function addWorkspaceMember(
   email: string,
   role: WorkspaceRole,
 ) {
-  return scopedDb.execute(async (db) => {
-    const user = await db
+  const user = await withSystemContext(async (sysDb) => {
+    return await sysDb
       .selectFrom('users')
       .where('email', '=', email.trim().toLowerCase())
       .select(['id', 'email', 'display_name'])
       .executeTakeFirst();
+  });
 
-    if (!user) {
-      throw new Error('User not found with provided email');
-    }
+  if (!user) {
+    throw new Error('User not found with provided email');
+  }
 
+  return scopedDb.execute(async (db) => {
     const existing = await db
       .selectFrom('workspace_members')
       .where('workspace_id', '=', workspaceId)

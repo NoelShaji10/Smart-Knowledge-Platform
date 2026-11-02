@@ -1,4 +1,5 @@
 import { ScopedDb } from '@knowledge/database';
+import { sql } from 'kysely';
 import { WorkspaceRole, DocumentRole } from '@knowledge/types';
 
 export interface DocumentCapabilities {
@@ -36,8 +37,27 @@ export async function getEffectiveDocumentRole(
       .select(['id', 'created_by'])
       .executeTakeFirst();
 
+    let isDeniedByOverride = false;
     if (!doc) {
-      return null;
+      // Under PostgreSQL RLS, documents_select_policy hides the row if user has explicit role='none'.
+      // Check if user has an override with role='none' and verify workspace via SECURITY DEFINER helper.
+      const override = await db
+        .selectFrom('document_permissions')
+        .where('document_id', '=', documentId)
+        .where('user_id', '=', userId)
+        .select(['role'])
+        .executeTakeFirst();
+
+      if (override?.role === 'none') {
+        const wsCheck = await sql<{ doc_ws_id: string | null }>`SELECT get_document_workspace_id(${documentId}::uuid) AS doc_ws_id`.execute(db);
+        if (wsCheck.rows[0]?.doc_ws_id === workspaceId) {
+          isDeniedByOverride = true;
+        } else {
+          return null;
+        }
+      } else {
+        return null;
+      }
     }
 
     // 2. Verify workspace membership
@@ -53,6 +73,22 @@ export async function getEffectiveDocumentRole(
     }
 
     const wsRole = member.role as WorkspaceRole;
+
+    if (isDeniedByOverride) {
+      return {
+        workspaceRole: wsRole,
+        documentOverrideRole: 'none',
+        effectiveRole: 'none',
+        isDenied: true,
+        capabilities: {
+          canRead: false,
+          canEdit: false,
+          canMove: false,
+          canArchive: false,
+          canManagePermissions: false,
+        },
+      };
+    }
 
     // 3. Query document-level permission override
     const override = await db

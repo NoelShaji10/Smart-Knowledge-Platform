@@ -372,7 +372,7 @@ export function createCollabServer() {
           const isArchived = err.message === 'Cannot create version checkpoint for an archived document';
           const isLockLost = err?.name === 'LockLostError' || err?.message?.includes('Lock ownership lost');
           const status = isNotFound ? 404 : isArchived ? 400 : isStale ? 409 : 500;
-          const safeMessage = isLockLost ? err.message : status === 500 ? 'Internal server error' : err.message || 'Checkpoint error';
+          const safeMessage = isLockLost ? err.message : (process.env.NODE_ENV === 'production' && status === 500) ? 'Internal server error' : err.message || 'Checkpoint error';
           res.writeHead(status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: safeMessage }));
         }

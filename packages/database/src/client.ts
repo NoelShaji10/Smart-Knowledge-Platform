@@ -5,6 +5,9 @@ import { Database } from './types';
 
 const { Pool } = pg;
 
+// Parse int8 (BIGINT) as Javascript number
+pg.types.setTypeParser(pg.types.builtins.INT8, (val: string) => parseInt(val, 10));
+
 let poolInstance: pg.Pool | null = null;
 let migrationPoolInstance: pg.Pool | null = null;
 let dbInstance: Kysely<Database> | null = null;

@@ -43,11 +43,19 @@ export function DocumentHeader({
     if (actionLoading) return;
     setActionLoading(true);
     try {
-      await api.createVersion(workspaceId, document.id);
+      const res = await api.createVersion(workspaceId, document.id);
+      if (res?.version && onDocumentUpdated) {
+        onDocumentUpdated({
+          ...document,
+          snapshot_version: res.version.version_number,
+        });
+      }
       showToast('Version checkpoint created', 'success');
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         showToast('Access denied: You do not have permission to create version checkpoints', 'error');
+      } else if (err instanceof ApiError && err.message) {
+        showToast(err.message, 'error');
       } else {
         showToast('Failed to create version checkpoint', 'error');
       }

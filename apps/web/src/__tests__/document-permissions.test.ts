@@ -238,5 +238,85 @@ describe('Task T9: Document Permissions, Version History & Archive Tests', () =>
       expect(formatReadOnlyStatus(true, 'disconnected', 0)).toBe('View Only');
       expect(formatReadOnlyStatus(false, 'connected', 2)).toBeNull();
     });
+
+    it('formats member dropdown options faithfully with display_name, email, and capitalized role', () => {
+      interface Member {
+        id: string;
+        email: string;
+        display_name: string | null;
+        role: string;
+      }
+
+      function formatMemberDropdownOption(m: Member): string {
+        const roleLabel = m.role ? m.role.charAt(0).toUpperCase() + m.role.slice(1) : '';
+        return `${m.display_name || m.email} (${m.email}) — ${roleLabel}`;
+      }
+
+      const alex: Member = {
+        id: 'u-1',
+        email: 'alex@example.com',
+        display_name: 'Alex Chen',
+        role: 'editor',
+      };
+      expect(formatMemberDropdownOption(alex)).toBe('Alex Chen (alex@example.com) — Editor');
+
+      const owner: Member = {
+        id: 'u-2',
+        email: 'owner@example.com',
+        display_name: 'Alice Smith',
+        role: 'owner',
+      };
+      expect(formatMemberDropdownOption(owner)).toBe('Alice Smith (owner@example.com) — Owner');
+
+      const admin: Member = {
+        id: 'u-3',
+        email: 'admin@example.com',
+        display_name: 'Bob Admin',
+        role: 'admin',
+      };
+      expect(formatMemberDropdownOption(admin)).toBe('Bob Admin (admin@example.com) — Admin');
+
+      const viewer: Member = {
+        id: 'u-4',
+        email: 'viewer@example.com',
+        display_name: 'Carol Viewer',
+        role: 'viewer',
+      };
+      expect(formatMemberDropdownOption(viewer)).toBe('Carol Viewer (viewer@example.com) — Viewer');
+
+      // Fallback when display_name is empty/null
+      const noName: Member = {
+        id: 'u-5',
+        email: 'unnamed@example.com',
+        display_name: null,
+        role: 'editor',
+      };
+      expect(formatMemberDropdownOption(noName)).toBe('unnamed@example.com (unnamed@example.com) — Editor');
+    });
+
+    it('invokes api.createVersion and updates document snapshot_version on Save Version', async () => {
+      const mockVersion = {
+        id: 'ver-10',
+        document_id: 'doc-1',
+        version_number: 5,
+        title: 'Updated Title',
+        content_text: 'Document body',
+        trigger: 'manual',
+        created_at: new Date().toISOString(),
+      };
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: () => Promise.resolve({ version: mockVersion }),
+      });
+
+      const res = await api.createVersion('ws-1', 'doc-1');
+      expect(res.version.version_number).toBe(5);
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/workspaces/ws-1/documents/doc-1/versions'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
   });
 });

@@ -199,11 +199,14 @@ export function DocumentPermissionsModal({
                 style={{ flex: 1 }}
               >
                 <option value="">Select workspace member...</option>
-                {members.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.display_name || m.email} ({m.email}) — [Workspace: {m.role}]
-                  </option>
-                ))}
+                {members.map((m) => {
+                  const roleLabel = m.role ? m.role.charAt(0).toUpperCase() + m.role.slice(1) : '';
+                  return (
+                    <option key={m.id} value={m.id}>
+                      {m.display_name || m.email} ({m.email}) — {roleLabel}
+                    </option>
+                  );
+                })}
               </select>
             ) : (
               <div style={{ flex: 1 }}>

@@ -4,6 +4,7 @@ import { ScopedDb } from '@knowledge/database';
 import { VersionTrigger } from '@knowledge/types';
 import { getEnv } from '@knowledge/config';
 import { loadVersionSnapshot } from '@knowledge/storage';
+import { AppError } from '../middleware/error-handler';
 
 /**
  * Create a manual (or system-triggered) version checkpoint for a document.
@@ -29,11 +30,11 @@ export async function createVersionCheckpoint(
   });
 
   if (!doc) {
-    throw new Error('Document not found');
+    throw new AppError('Document not found', 404);
   }
 
   if (doc.is_archived) {
-    throw new Error('Cannot create version checkpoint for an archived document');
+    throw new AppError('Cannot create version checkpoint for an archived document', 400);
   }
 
   const env = getEnv();
@@ -60,21 +61,28 @@ export async function createVersionCheckpoint(
       const body = (await res.json()) as any;
       return body.version;
     } else if (res.status === 401) {
-      throw new Error('Collab server authentication failed');
+      throw new AppError('Collab server authentication failed', 401);
     } else if (res.status === 404) {
-      throw new Error('Document not found');
+      throw new AppError('Document not found', 404);
     } else if (res.status === 400) {
       const errBody = (await res.json().catch(() => ({}))) as any;
-      throw new Error(errBody.error || 'Cannot create version checkpoint for an archived document');
+      throw new AppError(errBody.error || 'Cannot create version checkpoint for an archived document', 400);
+    } else if (res.status === 409) {
+      const errBody = (await res.json().catch(() => ({}))) as any;
+      throw new AppError(errBody.error || 'Conflict: document state has changed', 409);
     } else {
       const errBody = (await res.json().catch(() => ({}))) as any;
-      throw new Error(
-        `Collab server checkpoint failed with status ${res.status}${errBody.error ? ': ' + errBody.error : ''}`
+      throw new AppError(
+        `Collab server checkpoint failed with status ${res.status}${errBody.error ? ': ' + errBody.error : ''}`,
+        res.status >= 400 && res.status < 600 ? res.status : 500,
       );
     }
   } catch (err: any) {
+    if (err instanceof AppError) {
+      throw err;
+    }
     if (err.name === 'AbortError') {
-      throw new Error('Collab server timed out during version checkpoint');
+      throw new AppError('Collab server timed out during version checkpoint', 504);
     }
     if (
       err.message.startsWith('Collab server') ||
@@ -83,7 +91,7 @@ export async function createVersionCheckpoint(
     ) {
       throw err;
     }
-    throw new Error(`Collab server is unreachable for version checkpoint: ${err.message}`);
+    throw new AppError(`Collab server is unreachable for version checkpoint: ${err.message}`, 503);
   } finally {
     clearTimeout(checkpointTimeout);
   }
@@ -223,17 +231,17 @@ export async function restoreVersion(
   });
 
   if (!doc) {
-    throw new Error('Document not found');
+    throw new AppError('Document not found', 404);
   }
 
   // Invariant: Restoring into an archived document is rejected
   if (doc.is_archived) {
-    throw new Error('Cannot restore version for an archived document');
+    throw new AppError('Cannot restore version for an archived document', 400);
   }
 
   const versionRow = await getDocumentVersion(scopedDb, workspaceId, documentId, versionNumber);
   if (!versionRow) {
-    throw new Error('Version not found');
+    throw new AppError('Version not found', 404);
   }
 
   // Step A: Delegate to Collab Server under unified per-document lock

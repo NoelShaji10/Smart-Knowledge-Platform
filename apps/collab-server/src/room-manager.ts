@@ -1214,132 +1214,133 @@ export async function createDocumentCheckpoint(
       await lockContext?.verifyOwnership();
 
       const result = await withSystemContext(async (systemDb) => {
-        return await systemDb.transaction().execute(async (trx) => {
-          lockContext?.assertLockValid();
+        const trx = systemDb;
+        lockContext?.assertLockValid();
 
-          let docQuery = trx
-            .selectFrom('documents')
-            .where('id', '=', documentId)
-            .where('workspace_id', '=', workspaceId)
-            .select(['id', 'title', 'content_text', 'is_archived', 'snapshot_key', 'snapshot_version', 'fencing_token']);
+        let docQuery = trx
+          .selectFrom('documents')
+          .where('id', '=', documentId)
+          .where('workspace_id', '=', workspaceId)
+          .select(['id', 'title', 'content_text', 'is_archived', 'snapshot_key', 'snapshot_version', 'fencing_token']);
 
-          if (typeof (docQuery as any).forUpdate === 'function') {
-            docQuery = (docQuery as any).forUpdate();
-          }
-          const doc = await docQuery.executeTakeFirst();
+        if (typeof (docQuery as any).forUpdate === 'function') {
+          docQuery = (docQuery as any).forUpdate();
+        }
+        const doc = await docQuery.executeTakeFirst();
 
-          if (!doc) {
-            throw new Error('Document not found');
-          }
-          if (doc.is_archived) {
-            throw new Error('Cannot create version checkpoint for an archived document');
-          }
+        if (!doc) {
+          throw new Error('Document not found');
+        }
+        if (doc.is_archived) {
+          throw new Error('Cannot create version checkpoint for an archived document');
+        }
 
-          if (fencingToken > 0 && Number(doc.fencing_token || 0) > fencingToken) {
-            throw new StaleFencingTokenError(
-              `Stale checkpoint for ${documentId}: lock token ${fencingToken} < DB token ${doc.fencing_token}`
-            );
-          }
+        if (fencingToken > 0 && Number(doc.fencing_token || 0) > fencingToken) {
+          throw new StaleFencingTokenError(
+            `Stale checkpoint for ${documentId}: lock token ${fencingToken} < DB token ${doc.fencing_token}`
+          );
+        }
 
-          title = doc.title;
-          if (!contentText) {
-            contentText = doc.content_text;
-          }
+        title = doc.title;
+        if (!contentText) {
+          contentText = doc.content_text;
+        }
 
-          if ((!snapshotBytes || snapshotBytes.length === 0) && doc.content_text) {
-            const tempDoc = new Y.Doc();
+        if (!snapshotBytes || snapshotBytes.length === 0) {
+          const tempDoc = new Y.Doc();
+          if (doc.content_text) {
             const frag = tempDoc.getXmlFragment('default');
             const p = new Y.XmlElement('p');
             p.insert(0, [new Y.XmlText(doc.content_text)]);
             frag.insert(0, [p]);
-            snapshotBytes = Y.encodeStateAsUpdate(tempDoc);
           }
+          snapshotBytes = Y.encodeStateAsUpdate(tempDoc);
+        }
 
-          const maxRes = await trx
-            .selectFrom('document_versions')
-            .where('document_id', '=', documentId)
-            .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
-            .executeTakeFirst();
+        const maxRes = await trx
+          .selectFrom('document_versions')
+          .where('document_id', '=', documentId)
+          .select(sql<string | number>`COALESCE(MAX(version_number), 0)`.as('max_ver'))
+          .executeTakeFirst();
 
-          const currentMaxVersion = Number(maxRes?.max_ver || 0);
-          const nextVersion = currentMaxVersion + 1;
+        const currentMaxVersion = Number(maxRes?.max_ver || 0);
+        const nextVersion = currentMaxVersion + 1;
 
-          lockContext?.assertLockValid();
-          await lockContext?.verifyOwnership();
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
 
-          let versionKey: string | null = null;
-          if (snapshotBytes && snapshotBytes.length > 0) {
-            versionKey = await saveVersionSnapshot(documentId, nextVersion, snapshotBytes);
-          }
+        let versionKey: string | null = null;
+        if (snapshotBytes && snapshotBytes.length > 0) {
+          versionKey = await saveVersionSnapshot(documentId, nextVersion, snapshotBytes);
+        }
 
-          lockContext?.assertLockValid();
-          await lockContext?.verifyOwnership();
+        lockContext?.assertLockValid();
+        await lockContext?.verifyOwnership();
 
-          const versionRow = await trx
-            .insertInto('document_versions')
-            .values({
-              document_id: documentId,
+        const versionRow = await trx
+          .insertInto('document_versions')
+          .values({
+            document_id: documentId,
+            version_number: nextVersion,
+            snapshot_key: versionKey,
+            title: title || doc.title,
+            content_text: contentText,
+            created_by: userId,
+            trigger: trigger,
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+          })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        const updatedDoc = await trx
+          .updateTable('documents')
+          .set({
+            snapshot_version: nextVersion,
+            content_text: contentText,
+            ...(recoveryKey ? { snapshot_key: recoveryKey } : {}),
+            ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
+            updated_at: new Date(),
+          })
+          .where('id', '=', documentId)
+          .where('workspace_id', '=', workspaceId)
+          .where((eb) => {
+            if (fencingToken > 0) {
+              return eb.or([
+                eb('fencing_token', '<=', fencingToken),
+                eb('fencing_token', 'is', null),
+              ]);
+            }
+            return eb.val(true);
+          })
+          .returning(['id'])
+          .executeTakeFirst();
+
+        if (!updatedDoc) {
+          throw new StaleFencingTokenError(
+            `Stale checkpoint commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
+          );
+        }
+
+        await trx
+          .insertInto('audit_events')
+          .values({
+            workspace_id: workspaceId,
+            actor_id: userId,
+            action: 'document.version.created',
+            resource_type: 'document',
+            resource_id: documentId,
+            metadata: JSON.stringify({
               version_number: nextVersion,
-              snapshot_key: versionKey,
-              title: title || doc.title,
-              content_text: contentText,
-              created_by: userId,
-              trigger: trigger,
-              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-            })
-            .returningAll()
-            .executeTakeFirstOrThrow();
+              trigger,
+            }),
+            ip_address: null,
+            user_agent: null,
+          })
+          .execute();
 
-          const updatedDoc = await trx
-            .updateTable('documents')
-            .set({
-              snapshot_version: nextVersion,
-              content_text: contentText,
-              ...(recoveryKey ? { snapshot_key: recoveryKey } : {}),
-              ...(fencingToken > 0 ? { fencing_token: fencingToken } : {}),
-              updated_at: new Date(),
-            })
-            .where('id', '=', documentId)
-            .where('workspace_id', '=', workspaceId)
-            .where((eb) => {
-              if (fencingToken > 0) {
-                return eb.or([
-                  eb('fencing_token', '<=', fencingToken),
-                  eb('fencing_token', 'is', null),
-                ]);
-              }
-              return eb.val(true);
-            })
-            .returning(['id'])
-            .executeTakeFirst();
+        lockContext?.assertLockValid();
 
-          if (!updatedDoc) {
-            throw new StaleFencingTokenError(
-              `Stale checkpoint commit for ${documentId}: fencing token ${fencingToken} superseded in DB`
-            );
-          }
-
-          await trx
-            .insertInto('audit_events')
-            .values({
-              workspace_id: workspaceId,
-              actor_id: userId,
-              action: 'document.version.created',
-              resource_type: 'document',
-              resource_id: documentId,
-              metadata: JSON.stringify({
-                version_number: nextVersion,
-                trigger,
-              }),
-              ip_address: null,
-              user_agent: null,
-            })
-            .execute();
-
-          lockContext?.assertLockValid();
-
-          return versionRow;
-        });
+        return versionRow;
       });
 
       try {

@@ -5,7 +5,15 @@
 
 .header {
   margin-bottom: var(--space-6);
+  text-align: left;
+}
+
+.successHeader {
+  margin-bottom: var(--space-6);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .heading {
@@ -14,13 +22,14 @@
   font-weight: 600;
   color: var(--fg);
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+  margin: 0;
 }
 
 .subtext {
   font-size: var(--text-sm);
   color: var(--fg-secondary);
-  margin-top: var(--space-1);
+  margin-top: var(--space-2);
   line-height: 1.5;
 }
 
@@ -32,6 +41,11 @@
   padding: var(--space-8) var(--space-4);
   font-size: var(--text-sm);
   color: var(--fg-secondary);
+  background-color: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .successIconBadge {
@@ -44,6 +58,7 @@
   background: oklch(0.65 0.18 145 / 0.15);
   color: oklch(0.65 0.18 145);
   margin-bottom: var(--space-4);
+  box-shadow: 0 0 16px oklch(0.65 0.18 145 / 0.2);
 }
 
 .form {
@@ -61,18 +76,21 @@
   background-color: var(--danger-subtle);
   border: 1px solid oklch(0.55 0.2 25 / 0.18);
   padding: var(--space-3);
-  border-radius: 6px;
+  border-radius: 8px;
   line-height: 1.4;
   margin-bottom: var(--space-4);
 }
 
 .successMessage {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
   font-size: var(--text-sm);
   color: oklch(0.65 0.18 145);
   background-color: oklch(0.65 0.18 145 / 0.1);
-  border: 1px solid oklch(0.65 0.18 145 / 0.2);
+  border: 1px solid oklch(0.65 0.18 145 / 0.25);
   padding: var(--space-3);
-  border-radius: 6px;
+  border-radius: 8px;
   line-height: 1.4;
   margin-bottom: var(--space-4);
 }
@@ -83,21 +101,25 @@
 }
 
 .actionRow {
-  margin-top: var(--space-4);
+  margin-top: var(--space-2);
 }
 
-.footerText {
+.cardFooter {
   margin-top: var(--space-6);
   padding-top: var(--space-5);
   border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.footerText {
   font-size: var(--text-sm);
   color: var(--fg-secondary);
-  text-align: center;
+  margin: 0;
 }
 
 .footerLink {
   color: var(--accent);
-  font-weight: 500;
+  font-weight: 600;
   text-decoration: none;
   border-radius: 3px;
   transition: color 0.15s ease;

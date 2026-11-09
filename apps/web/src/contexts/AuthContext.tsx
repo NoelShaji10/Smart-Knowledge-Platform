@@ -3,17 +3,35 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { api, User, ApiError, setAccessToken, onAuthFailure } from '@/lib/api';
 
-interface AuthContextType {
+export interface RegisterResult {
+  user: User;
+  verificationEmailSent?: boolean;
+  message?: string;
+}
+
+export interface RegistrationNotice {
+  sent: boolean;
+  message: string;
+}
+
+export interface AuthContextType {
   user: User | null;
   loading: boolean;
   isNetworkError: boolean;
   error: string | null;
+  registrationNotice?: RegistrationNotice | null;
   login: (email: string, password: string) => Promise<User>;
-  register: (displayName: string, email: string, password: string, returnUrl?: string) => Promise<User>;
+  register: (
+    displayName: string,
+    email: string,
+    password: string,
+    returnUrl?: string,
+  ) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<{ ok: boolean; remoteRevoked: boolean }>;
   refreshUser: () => Promise<User | null>;
   clearError: () => void;
+  clearRegistrationNotice?: () => void;
 }
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -23,10 +41,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState<boolean>(true);
   const [isNetworkError, setIsNetworkError] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [registrationNotice, setRegistrationNotice] = useState<RegistrationNotice | null>(null);
 
   const clearError = useCallback(() => {
     setError(null);
     setIsNetworkError(false);
+  }, []);
+
+  const clearRegistrationNotice = useCallback(() => {
+    setRegistrationNotice(null);
   }, []);
 
   useEffect(() => {
@@ -134,13 +157,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     email: string,
     password: string,
     returnUrl?: string,
-  ): Promise<User> => {
+  ): Promise<RegisterResult> => {
     clearError();
     try {
       const res = await api.register({ displayName, email, password, returnUrl });
       setAccessToken(res.accessToken);
       setUser(res.user);
-      return res.user;
+
+      const emailSent = res.verificationEmailSent !== false;
+      const noticeMessage =
+        res.message ||
+        (emailSent
+          ? 'Registration successful. A verification email has been sent to your inbox.'
+          : 'Account created, but verification email could not be sent. You can request a new link at /verify-email.');
+
+      setRegistrationNotice({
+        sent: emailSent,
+        message: noticeMessage,
+      });
+
+      return {
+        user: res.user,
+        verificationEmailSent: res.verificationEmailSent,
+        message: res.message,
+      };
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 0) {
@@ -206,12 +246,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         isNetworkError,
         error,
+        registrationNotice,
         login: handleLogin,
         register: handleRegister,
         logout: handleLogout,
         logoutAll: handleLogoutAll,
         refreshUser,
         clearError,
+        clearRegistrationNotice,
       }}
     >
       {children}

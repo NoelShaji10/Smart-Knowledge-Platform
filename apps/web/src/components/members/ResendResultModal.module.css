@@ -4,8 +4,9 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: oklch(0 0 0 / 0.5);
-  backdrop-filter: blur(4px);
+  background-color: oklch(0 0 0 / 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16,16 +17,17 @@
 
 .modal {
   width: 100%;
-  max-width: 520px;
+  max-width: 540px;
   background-color: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   padding: var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  box-shadow: 0 12px 32px oklch(0 0 0 / 0.2);
+  gap: var(--space-4.5);
+  box-shadow: 0 20px 40px -8px rgba(15, 23, 42, 0.18), 0 1px 3px rgba(15, 23, 42, 0.06);
   animation: slideUp 0.15s ease-out;
+  box-sizing: border-box;
 }
 
 .header {
@@ -38,20 +40,26 @@
 .titleRow {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-2.5);
 }
 
 .title {
-  font-family: var(--font-body);
-  font-size: var(--text-lg);
+  font-family: var(--font-display);
+  font-size: 20px;
   font-weight: 600;
   color: var(--fg);
   margin: 0;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
 .successIcon {
-  color: var(--success);
+  color: #059669;
   flex-shrink: 0;
+}
+
+:global(.dark) .successIcon {
+  color: #34d399;
 }
 
 .closeBtn {
@@ -59,10 +67,14 @@
   border: none;
   color: var(--fg-tertiary);
   cursor: pointer;
-  padding: var(--space-1);
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: 6px;
   font-size: 1.25rem;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
 }
 
 .closeBtn:hover {
@@ -74,7 +86,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  font-size: var(--text-base);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
   color: var(--fg-secondary);
 }
 
@@ -82,7 +95,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: 6px var(--space-3);
   background-color: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -100,42 +113,45 @@
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: all;
+  padding: 4px 0;
 }
 
 .infoBox {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-2.5);
+  padding: var(--space-3) var(--space-3.5);
   background-color: var(--accent-subtle);
-  border-radius: 8px;
-  font-size: var(--text-sm);
+  border: 1px solid oklch(0.55 0.17 255 / 0.15);
+  border-radius: 10px;
+  font-size: var(--text-xs);
   color: var(--fg);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .infoIcon {
   color: var(--accent);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .warningBox {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-2.5);
+  padding: var(--space-3) var(--space-3.5);
   background-color: var(--warning-subtle);
-  border-radius: 8px;
-  font-size: var(--text-sm);
+  border: 1px solid oklch(0.7 0.16 75 / 0.25);
+  border-radius: 10px;
+  font-size: var(--text-xs);
   color: var(--fg);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .warningIcon {
   color: oklch(0.65 0.18 55);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .actions {
@@ -147,11 +163,21 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes slideUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

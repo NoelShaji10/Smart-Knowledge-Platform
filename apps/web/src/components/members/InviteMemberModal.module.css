@@ -4,8 +4,9 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: oklch(0 0 0 / 0.5);
-  backdrop-filter: blur(4px);
+  background-color: oklch(0 0 0 / 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16,32 +17,37 @@
 
 .modal {
   width: 100%;
-  max-width: 520px;
+  max-width: 560px;
   background-color: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   padding: var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  box-shadow: 0 12px 32px oklch(0 0 0 / 0.2);
+  gap: var(--space-5);
+  box-shadow: 0 20px 40px -8px rgba(15, 23, 42, 0.18), 0 1px 3px rgba(15, 23, 42, 0.06);
   animation: slideUp 0.15s ease-out;
   max-height: 90vh;
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-1);
 }
 
 .title {
-  font-family: var(--font-body);
-  font-size: var(--text-lg);
+  font-family: var(--font-display);
+  font-size: 22px;
   font-weight: 600;
   color: var(--fg);
   margin: 0;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
 }
 
 .closeBtn {
@@ -49,152 +55,209 @@
   border: none;
   color: var(--fg-tertiary);
   cursor: pointer;
-  padding: var(--space-1);
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: 6px;
   font-size: 1.25rem;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
 }
 
-.closeBtn:hover {
+.closeBtn:hover:not(:disabled) {
   color: var(--fg);
   background-color: var(--surface-alt);
+}
+
+.closeBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-4.5);
 }
 
 .fieldGroup {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-1.5);
 }
 
 .label {
-  font-size: var(--text-sm);
-  font-weight: 500;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .optionalTag {
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
   font-weight: 400;
-  margin-left: var(--space-1);
 }
 
 .input {
   width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background-color: var(--bg);
+  height: 40px;
+  padding: 0 var(--space-3);
+  background-color: var(--surface-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg);
   font-size: var(--text-sm);
   font-family: var(--font-body);
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+  transition: all 0.15s ease;
 }
 
 .input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
+  background-color: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .select {
   width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background-color: var(--bg);
+  height: 40px;
+  padding: 0 var(--space-3);
+  background-color: var(--surface-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg);
   font-size: var(--text-sm);
   font-family: var(--font-body);
   outline: none;
   cursor: pointer;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+  transition: all 0.15s ease;
 }
 
 .select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
+  background-color: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .helperText {
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
+/* Radio Cards (Role Selector) */
 .radioGroup {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2.5);
 }
 
 .radioCard {
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: var(--space-3);
+  border-radius: 10px;
+  padding: var(--space-3.5);
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  background-color: var(--bg);
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  justify-content: space-between;
+  min-height: 96px;
+  background-color: var(--surface-alt);
+  transition: all 0.15s ease;
+  position: relative;
+  outline: none;
 }
 
 .radioCard:hover {
   border-color: var(--border-strong);
-  background-color: var(--surface-alt);
+  background-color: var(--surface);
+}
+
+.radioCard:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .radioCardActive {
   border-color: var(--accent);
   background-color: var(--accent-subtle);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .radioTitle {
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--fg);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.radioCardActive .radioTitle {
+  color: var(--accent);
+}
+
+.radioCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
 }
 
 .radioDesc {
-  font-size: var(--text-xs);
+  font-family: var(--font-body);
+  font-size: 11px;
   color: var(--fg-secondary);
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
+/* Error and Alert Banners */
 .errorBanner {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3.5);
   background-color: var(--danger-subtle);
-  border: 1px solid oklch(0.55 0.2 25 / 0.3);
+  border: 1px solid oklch(0.55 0.2 25 / 0.25);
   border-radius: 8px;
   font-size: var(--text-sm);
   color: var(--danger);
   line-height: 1.4;
+  animation: fadeIn 0.15s ease-out;
 }
 
 .rateLimitBanner {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3.5);
   background-color: var(--warning-subtle);
   border: 1px solid oklch(0.7 0.16 75 / 0.3);
   border-radius: 8px;
   font-size: var(--text-sm);
   color: var(--fg);
   line-height: 1.4;
+  animation: fadeIn 0.15s ease-out;
 }
 
+/* Success View */
 .successBody {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   color: var(--fg-secondary);
 }
@@ -203,7 +266,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: 6px var(--space-3);
   background-color: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -221,42 +284,45 @@
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: all;
+  padding: 4px 0;
 }
 
 .infoNotice {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-2.5);
+  padding: var(--space-3.5);
   background-color: var(--accent-subtle);
-  border-radius: 8px;
+  border: 1px solid oklch(0.55 0.17 255 / 0.15);
+  border-radius: 10px;
   font-size: var(--text-xs);
   color: var(--fg);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .infoIcon {
   color: var(--accent);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .warningNotice {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-2.5);
+  padding: var(--space-3.5);
   background-color: var(--warning-subtle);
-  border-radius: 8px;
+  border: 1px solid oklch(0.7 0.16 75 / 0.25);
+  border-radius: 10px;
   font-size: var(--text-xs);
   color: var(--fg);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .warningIcon {
   color: oklch(0.65 0.18 55);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .actions {
@@ -268,11 +334,21 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes slideUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

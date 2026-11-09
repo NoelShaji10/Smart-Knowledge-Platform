@@ -110,8 +110,23 @@ export function Topbar({ onToggleSidebar, isSidebarOpen, hamburgerRef }: TopbarP
           onClick={() => showToast('Search functionality will be enabled in a future release.', 'info')}
           aria-label="Search documents (placeholder)"
         >
-          <span>Search documents...</span>
-          <span className={styles.shortcut}>⌘K</span>
+          <span className={styles.searchLeft}>
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className={styles.searchIcon}
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <span>Search documents...</span>
+          </span>
+          <kbd className={styles.shortcut}>⌘K</kbd>
         </button>
       </div>
 

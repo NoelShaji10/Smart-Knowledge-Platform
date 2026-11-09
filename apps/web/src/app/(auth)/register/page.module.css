@@ -13,13 +13,14 @@
   font-weight: 600;
   color: var(--fg);
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+  margin: 0;
 }
 
 .subtext {
   font-size: var(--text-sm);
   color: var(--fg-secondary);
-  margin-top: var(--space-1);
+  margin-top: var(--space-2);
   line-height: 1.5;
 }
 
@@ -38,13 +39,35 @@
   background-color: var(--danger-subtle);
   border: 1px solid oklch(0.55 0.2 25 / 0.18);
   padding: var(--space-3);
-  border-radius: 6px;
+  border-radius: 8px;
   line-height: 1.4;
 }
 
 .errorIcon {
   flex-shrink: 0;
   margin-top: 2px;
+}
+
+.visibilityToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 4px;
+  color: var(--fg-tertiary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.visibilityToggle:hover {
+  color: var(--fg);
+}
+
+.visibilityToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .passwordFieldGroup {
@@ -54,10 +77,18 @@
 }
 
 .passwordRequirement {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
-  margin-top: 2px;
+  margin-top: 4px;
   transition: color 0.15s ease;
+}
+
+.requirementCheck {
+  font-weight: 700;
+  font-size: 0.75rem;
 }
 
 .met {
@@ -69,18 +100,25 @@
   margin-top: var(--space-2);
 }
 
-.footerText {
+.cardFooter {
   margin-top: var(--space-6);
   padding-top: var(--space-5);
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  text-align: center;
+}
+
+.footerText {
   font-size: var(--text-sm);
   color: var(--fg-secondary);
-  text-align: center;
+  margin: 0;
 }
 
 .footerLink {
   color: var(--accent);
-  font-weight: 500;
+  font-weight: 600;
   text-decoration: none;
   border-radius: 3px;
   transition: color 0.15s ease;
@@ -94,4 +132,11 @@
 .footerLink:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.termsHint {
+  font-size: var(--text-xs);
+  color: var(--fg-tertiary);
+  line-height: 1.4;
+  margin: 0;
 }

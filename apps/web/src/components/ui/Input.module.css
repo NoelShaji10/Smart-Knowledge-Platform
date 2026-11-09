@@ -5,6 +5,41 @@
   width: 100%;
 }
 
+.inputWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.startIcon {
+  position: absolute;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-tertiary);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.endAction {
+  position: absolute;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.hasStartIcon {
+  padding-left: 38px !important;
+}
+
+.hasEndAction {
+  padding-right: 40px !important;
+}
+
 .label {
   font-size: var(--text-sm);
   font-weight: 500;

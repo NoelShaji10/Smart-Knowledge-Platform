@@ -1,30 +1,97 @@
 :root {
-  /* Color Palette (OKLch) */
-  --bg: oklch(0.99 0.002 260);
-  --surface: oklch(0.97 0.003 260);
-  --surface-alt: oklch(0.95 0.004 260);
-  --border: oklch(0.91 0.005 260);
-  --border-strong: oklch(0.85 0.006 260);
+  /* ==========================================================================
+     Stitch Visual System Tokens (Knowledge Platform Redesign)
+     ========================================================================== */
 
-  --fg: oklch(0.18 0.01 260);
-  --fg-secondary: oklch(0.42 0.01 260);
-  --fg-tertiary: oklch(0.58 0.008 260);
+  /* Surface Hierarchy */
+  --surface-canvas: #F8F9FF;           /* Soft cool-tinted page background */
+  --surface-card: #FFFFFF;             /* Elevated white card & modal surface */
+  --surface-sidebar: #EFF4FF;          /* Primary sidebar & secondary panel surface */
+  --surface-subtle: #E5EEFF;           /* Table alternate rows, hover states */
+  --surface-active: #DCE9FF;           /* Selected items, active tabs */
+  --surface-overlay: rgba(11, 28, 48, 0.45); /* Modal overlay backdrop */
 
-  --accent: oklch(0.55 0.17 255);
-  --accent-hover: oklch(0.50 0.17 255);
-  --accent-subtle: oklch(0.95 0.04 255);
+  /* Text & Ink */
+  --text-main: #0B1C30;               /* Primary high-contrast slate navy text */
+  --text-muted: #434655;              /* Secondary labels, descriptions, table headers */
+  --text-subtle: #737686;             /* Tertiary metadata, placeholders, disabled text */
+  --text-inverse: #FFFFFF;            /* White text for dark action buttons & badges */
 
-  --danger: oklch(0.55 0.2 25);
-  --danger-subtle: oklch(0.95 0.04 25);
-  --success: oklch(0.55 0.18 145);
-  --success-subtle: oklch(0.95 0.04 145);
-  --warning: oklch(0.7 0.16 75);
-  --warning-subtle: oklch(0.96 0.04 75);
+  /* Brand & Action Colors */
+  --primary-accent: #004AC6;          /* Stitch signature royal blue CTA */
+  --primary-hover: #1D4ED8;           /* Hover action state */
+  --primary-active: #1E40AF;          /* Pressed action state */
+  --primary-subtle: #EFF6FF;          /* Tinted background for active chips & items */
+  --primary-fg: #FFFFFF;              /* Primary button text */
 
-  /* Fonts */
-  --font-display: 'Charter', 'Bitstream Charter', 'Sitka Text', Cambria, serif;
-  --font-body: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
-  --font-mono: var(--font-jetbrains, 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace);
+  /* Status & Semantic Badges */
+  --badge-success-bg: #ECFDF5;
+  --badge-success-fg: #059669;
+  --badge-success-border: #A7F3D0;
+
+  --badge-warning-bg: #FFFBEB;
+  --badge-warning-fg: #D97706;
+  --badge-warning-border: #FDE68A;
+
+  --badge-danger-bg: #FFF1F2;
+  --badge-danger-fg: #E11D48;
+  --badge-danger-border: #FECDD3;
+
+  --badge-info-bg: #EFF6FF;
+  --badge-info-fg: #2563EB;
+  --badge-info-border: #BFDBFE;
+
+  /* Borders & Dividers */
+  --border-subtle: #E2E8F0;           /* Subtle card & row dividers */
+  --border-strong: #CBD5E1;           /* Stronger input & active borders */
+  --border-focus: #2563EB;            /* Focus ring border */
+
+  /* Radii & Shapes */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;                   /* Stitch standard controls & badges */
+  --radius-lg: 12px;                  /* Stitch cards & container frames */
+  --radius-xl: 16px;                  /* Stitch modal windows */
+  --radius-pill: 9999px;              /* Full round pills & status badges */
+
+  /* Elevation & Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(11, 28, 48, 0.05);
+  --shadow-card: 0 1px 3px 0 rgba(11, 28, 48, 0.06), 0 1px 2px -1px rgba(11, 28, 48, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(11, 28, 48, 0.07), 0 2px 4px -2px rgba(11, 28, 48, 0.04);
+  --shadow-popover: 0 10px 15px -3px rgba(11, 28, 48, 0.08), 0 4px 6px -4px rgba(11, 28, 48, 0.04);
+  --shadow-modal: 0 20px 25px -5px rgba(11, 28, 48, 0.1), 0 8px 10px -6px rgba(11, 28, 48, 0.06);
+
+  /* Fonts & Typography Hierarchy */
+  --font-editorial: var(--font-newsreader, 'Newsreader', 'Charter', 'Bitstream Charter', Georgia, serif);
+  --font-ui: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
+  --font-code: var(--font-jetbrains, 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace);
+
+  /* Backward-Compatible Font Aliases */
+  --font-display: var(--font-editorial);
+  --font-body: var(--font-ui);
+  --font-mono: var(--font-code);
+
+  /* Backward-Compatible Semantic Token Aliases */
+  --bg: var(--surface-canvas);
+  --surface: var(--surface-card);
+  --surface-alt: var(--surface-sidebar);
+  --border: var(--border-subtle);
+  --border-strong: var(--border-strong);
+
+  --fg: var(--text-main);
+  --fg-secondary: var(--text-muted);
+  --fg-tertiary: var(--text-subtle);
+
+  --accent: var(--primary-accent);
+  --accent-hover: var(--primary-hover);
+  --accent-subtle: var(--primary-subtle);
+
+  --danger: var(--badge-danger-fg);
+  --danger-subtle: var(--badge-danger-bg);
+  --success: var(--badge-success-fg);
+  --success-subtle: var(--badge-success-bg);
+  --warning: var(--badge-warning-fg);
+  --warning-subtle: var(--badge-warning-bg);
 
   /* Type Scale */
   --text-xs: 0.75rem;     /* 12px */
@@ -47,25 +114,56 @@
   --space-12: 3rem;    /* 48px */
   --space-16: 4rem;    /* 64px */
 
-  /* Layout Dimensions */
-  --topbar-height: 52px;
-  --sidebar-width: 240px;
+  /* Layout Dimensions (Stitch Knowledge Platform Specification) */
+  --topbar-height: 56px;
+  --sidebar-width: 256px;
 }
 
 [data-theme="dark"] {
-  --bg: oklch(0.18 0.01 260);
-  --surface: oklch(0.22 0.01 260);
-  --surface-alt: oklch(0.26 0.01 260);
-  --border: oklch(0.30 0.01 260);
+  /* Surfaces */
+  --surface-canvas: oklch(0.18 0.01 260);
+  --surface-card: oklch(0.22 0.01 260);
+  --surface-sidebar: oklch(0.20 0.01 260);
+  --surface-subtle: oklch(0.26 0.01 260);
+  --surface-active: oklch(0.30 0.01 260);
+  --surface-overlay: rgba(0, 0, 0, 0.7);
+
+  /* Ink */
+  --text-main: oklch(0.95 0.004 260);
+  --text-muted: oklch(0.75 0.006 260);
+  --text-subtle: oklch(0.58 0.008 260);
+
+  /* Primary Accent */
+  --primary-accent: oklch(0.65 0.17 255);
+  --primary-hover: oklch(0.70 0.17 255);
+  --primary-subtle: oklch(0.25 0.05 255);
+
+  /* Borders */
+  --border-subtle: oklch(0.30 0.01 260);
   --border-strong: oklch(0.40 0.01 260);
 
-  --fg: oklch(0.95 0.004 260);
-  --fg-secondary: oklch(0.75 0.006 260);
-  --fg-tertiary: oklch(0.58 0.008 260);
+  /* Status Badges (Dark Mode Tints) */
+  --badge-success-bg: oklch(0.25 0.05 145);
+  --badge-success-fg: oklch(0.85 0.15 145);
+  --badge-warning-bg: oklch(0.25 0.05 75);
+  --badge-warning-fg: oklch(0.85 0.15 75);
+  --badge-danger-bg: oklch(0.25 0.05 25);
+  --badge-danger-fg: oklch(0.85 0.15 25);
+  --badge-info-bg: oklch(0.25 0.05 255);
+  --badge-info-fg: oklch(0.85 0.15 255);
 
-  --accent: oklch(0.65 0.17 255);
-  --accent-hover: oklch(0.70 0.17 255);
-  --accent-subtle: oklch(0.25 0.05 255);
+  /* Legacy Aliases */
+  --bg: var(--surface-canvas);
+  --surface: var(--surface-card);
+  --surface-alt: var(--surface-sidebar);
+  --border: var(--border-subtle);
+  --border-strong: var(--border-strong);
+  --fg: var(--text-main);
+  --fg-secondary: var(--text-muted);
+  --fg-tertiary: var(--text-subtle);
+  --accent: var(--primary-accent);
+  --accent-hover: var(--primary-hover);
+  --accent-subtle: var(--primary-subtle);
 }
 
 *, *::before, *::after {
@@ -155,4 +253,25 @@ button, input, select, textarea {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Editorial & Stitch Typography Utilities */
+.kp-editorial-heading {
+  font-family: var(--font-editorial);
+  letter-spacing: -0.015em;
+  font-weight: 600;
+}
+
+.kp-editorial-title {
+  font-family: var(--font-editorial);
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+.kp-ui-text {
+  font-family: var(--font-ui);
+}
+
+.kp-code-text {
+  font-family: var(--font-code);
 }

@@ -7,10 +7,12 @@ export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   helperText?: string;
   errorText?: string;
+  startIcon?: React.ReactNode;
+  endAction?: React.ReactNode;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { label, helperText, errorText, className = '', id, ...props },
+  { label, helperText, errorText, startIcon, endAction, className = '', id, ...props },
   ref,
 ) {
   const generatedId = useId();
@@ -25,6 +27,16 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     .filter(Boolean)
     .join(' ');
 
+  const inputClasses = [
+    styles.input,
+    startIcon ? styles.hasStartIcon : null,
+    endAction ? styles.hasEndAction : null,
+    errorText ? styles.inputError : null,
+    className,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div className={styles.container}>
       {label && (
@@ -32,14 +44,22 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           {label}
         </label>
       )}
-      <input
-        ref={ref}
-        id={inputId}
-        aria-describedby={describedBy || undefined}
-        aria-invalid={Boolean(errorText)}
-        className={`${styles.input} ${errorText ? styles.inputError : ''} ${className}`.trim()}
-        {...props}
-      />
+      <div className={styles.inputWrapper}>
+        {startIcon && (
+          <span className={styles.startIcon} aria-hidden="true">
+            {startIcon}
+          </span>
+        )}
+        <input
+          ref={ref}
+          id={inputId}
+          aria-describedby={describedBy || undefined}
+          aria-invalid={Boolean(errorText)}
+          className={inputClasses}
+          {...props}
+        />
+        {endAction && <div className={styles.endAction}>{endAction}</div>}
+      </div>
       {errorText ? (
         <span id={errorId} className={styles.errorText} role="alert">
           {errorText}

@@ -347,7 +347,13 @@ export function InviteMemberModal({
                 >
                   <div className={styles.radioTitle}>
                     <span>Admin</span>
-                    {role === 'admin' && <span>✓</span>}
+                    {role === 'admin' && (
+                      <span className={styles.radioCheck}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      </span>
+                    )}
                   </div>
                   <div className={styles.radioDesc}>Manage members, settings & documents</div>
                 </div>
@@ -368,7 +374,13 @@ export function InviteMemberModal({
               >
                 <div className={styles.radioTitle}>
                   <span>Editor</span>
-                  {role === 'editor' && <span>✓</span>}
+                  {role === 'editor' && (
+                    <span className={styles.radioCheck}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </span>
+                  )}
                 </div>
                 <div className={styles.radioDesc}>Create, edit & collaborate on documents</div>
               </div>
@@ -388,7 +400,13 @@ export function InviteMemberModal({
               >
                 <div className={styles.radioTitle}>
                   <span>Viewer</span>
-                  {role === 'viewer' && <span>✓</span>}
+                  {role === 'viewer' && (
+                    <span className={styles.radioCheck}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </span>
+                  )}
                 </div>
                 <div className={styles.radioDesc}>Read-only access to workspace documents</div>
               </div>
@@ -455,7 +473,7 @@ export function InviteMemberModal({
             <Button
               type="submit"
               variant="primary"
-              loading={submitting}
+              loading={submitting ? true : undefined}
             >
               Generate Invitation Link
             </Button>

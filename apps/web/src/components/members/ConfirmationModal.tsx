@@ -108,7 +108,7 @@ export function ConfirmationModal({
           <Button
             variant={confirmVariant}
             onClick={onConfirm}
-            loading={loading}
+            loading={loading ? true : undefined}
           >
             {confirmLabel}
           </Button>

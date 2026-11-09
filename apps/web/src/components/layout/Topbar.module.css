@@ -1,8 +1,8 @@
 .topbar {
-  height: 52px;
+  height: var(--topbar-height);
   width: 100%;
-  background-color: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background-color: var(--surface-card);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -21,16 +21,16 @@
   display: none;
   background: none;
   border: none;
-  color: var(--fg);
+  color: var(--text-main);
   cursor: pointer;
   padding: var(--space-1);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   align-items: center;
   justify-content: center;
 }
 
 .hamburgerBtn:hover {
-  background-color: var(--surface-alt);
+  background-color: var(--surface-subtle);
 }
 
 @media (max-width: 1023px) {
@@ -43,26 +43,27 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--text-base);
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text-main);
   background: none;
   border: none;
   padding: var(--space-1) var(--space-2);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
 .workspaceTrigger:hover {
-  background-color: var(--surface-alt);
+  background-color: var(--surface-subtle);
 }
 
 .centerSection {
   flex: 1;
   display: flex;
   justify-content: center;
-  max-width: 400px;
+  max-width: 440px;
   margin: 0 var(--space-4);
 }
 
@@ -71,31 +72,49 @@
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  max-width: 280px;
-  height: 32px;
-  padding: 0 var(--space-3);
-  background-color: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  max-width: 320px;
+  height: 34px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  background-color: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
-  color: var(--fg-tertiary);
+  color: var(--text-subtle);
   cursor: pointer;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .searchPill:hover {
-  border-color: var(--accent);
-  color: var(--fg-secondary);
+  border-color: var(--border-focus);
+  background-color: var(--surface-card);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-sm);
+}
+
+.searchLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchIcon {
+  color: var(--text-subtle);
+  flex-shrink: 0;
 }
 
 .shortcut {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  padding: 1px 4px;
-  background-color: var(--surface-alt);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--fg-secondary);
+  font-family: var(--font-code);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  background-color: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  box-shadow: 0 1px 1px rgba(11, 28, 48, 0.06);
 }
 
 .rightSection {
@@ -110,13 +129,14 @@
   gap: var(--space-2);
   background: none;
   border: none;
-  padding: var(--space-1);
-  border-radius: 50%;
+  padding: 2px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
 }
 
 .userMenuTrigger:hover {
-  opacity: 0.85;
+  box-shadow: 0 0 0 2px var(--surface-active);
 }
 
 .userHeader {
@@ -129,19 +149,19 @@
 .userName {
   font-size: var(--text-sm);
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text-main);
 }
 
 .userEmail {
   font-size: var(--text-xs);
-  color: var(--fg-tertiary);
+  color: var(--text-subtle);
 }
 
 .hamburgerBtn:focus-visible,
 .searchPill:focus-visible,
 .workspaceTrigger:focus-visible,
 .userMenuTrigger:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
 

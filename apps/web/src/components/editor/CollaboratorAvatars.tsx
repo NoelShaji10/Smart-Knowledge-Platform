@@ -32,7 +32,8 @@ export function CollaboratorAvatars({ users, maxVisible = 5 }: CollaboratorAvata
             title={label}
             aria-label={label}
           >
-            {initials}
+            <span>{initials}</span>
+            <span className={styles.presenceDot} aria-hidden="true" />
           </div>
         );
       })}

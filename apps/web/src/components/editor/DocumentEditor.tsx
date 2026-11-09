@@ -501,6 +501,32 @@ export function DocumentEditor({
           />
         )}
 
+        {/* Document Meta Ribbon */}
+        <div className={styles.metaRibbon} aria-label="Document metadata">
+          <div className={styles.metaLeft}>
+            <span className={styles.docTypeBadge}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <span>{document.is_archived ? 'Archived Document' : 'Document'}</span>
+            </span>
+            <span className={styles.metaDot} aria-hidden="true">•</span>
+            <span className={styles.metaTime}>
+              Updated {new Date(document.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
+          </div>
+          <div className={styles.metaRight}>
+            <span className={styles.modeIndicator}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              <span>{isCollaborative ? 'Live Edit Mode' : (readOnly ? 'View Only' : 'Standard Edit Mode')}</span>
+            </span>
+          </div>
+        </div>
+
         <input
           type="text"
           value={title}

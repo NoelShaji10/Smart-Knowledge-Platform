@@ -720,6 +720,9 @@ describe('Phase 5 T6 — Workspace Navigation & Application Shell Tests', () => 
     const docLink = container.querySelector('a[href="/workspaces/ws-1/documents/doc-nav-1"]') as HTMLAnchorElement;
     expect(docLink).toBeDefined();
 
+    // Prevent default jsdom navigation action while preserving React onClick event bubbling
+    docLink.addEventListener('click', (e) => e.preventDefault(), { once: true });
+
     await act(async () => {
       docLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
@@ -1227,6 +1230,43 @@ describe('Phase 5 T6 — Workspace Navigation & Application Shell Tests', () => 
 
     // Old workspace documents must not be in the tree
     expect(Array.from(container.querySelectorAll('span, a')).some((el) => el.textContent?.includes('WS1 Child'))).toBe(false);
+  });
+
+  it('27. Sidebar renders platform branding lockup (\'Knowledge\') and workspace switch affordance at top', async () => {
+    const ws = createMockWorkspace({ id: 'ws-test', name: 'Engineering Core' });
+    vi.spyOn(api, 'listDocuments').mockResolvedValue({ documents: [] });
+
+    await renderWithContext(
+      el(
+        DocumentNavigationProvider,
+        { workspaceId: 'ws-test' },
+        el(Sidebar),
+      ),
+      { activeWorkspace: ws },
+    );
+
+    // 1. Verify platform brand lockup
+    const brandElement = Array.from(container.querySelectorAll('span')).find(
+      (el) => el.textContent?.trim() === 'Knowledge',
+    );
+    expect(brandElement).toBeTruthy();
+
+    // 2. Verify workspace monogram and name
+    const monogram = Array.from(container.querySelectorAll('span')).find(
+      (el) => el.textContent?.trim() === 'E',
+    );
+    expect(monogram).toBeTruthy();
+
+    const wsName = Array.from(container.querySelectorAll('span')).find(
+      (el) => el.textContent?.trim() === 'Engineering Core',
+    );
+    expect(wsName).toBeTruthy();
+
+    // 3. Verify section headers
+    const sectionHeaders = Array.from(container.querySelectorAll('div')).filter(
+      (el) => el.textContent?.trim() === 'WORKSPACE' || el.textContent?.trim() === 'KNOWLEDGE BASE',
+    );
+    expect(sectionHeaders.length).toBe(2);
   });
 });
 

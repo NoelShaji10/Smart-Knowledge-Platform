@@ -4,7 +4,7 @@
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background-color: var(--bg);
+  background-color: var(--surface-canvas);
 }
 
 .body {
@@ -18,7 +18,7 @@
 .sidebarWrapper {
   height: 100%;
   z-index: 90;
-  transition: transform 0.2s ease;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .mainContent {
@@ -27,7 +27,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
-  background-color: var(--bg);
+  background-color: var(--surface-canvas);
 }
 
 .backdrop {
@@ -37,7 +37,8 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: oklch(0 0 0 / 0.4);
+  background-color: var(--surface-overlay, rgba(11, 28, 48, 0.45));
+  backdrop-filter: blur(2px);
   z-index: 80;
 }
 
@@ -48,7 +49,7 @@
     left: 0;
     bottom: 0;
     transform: translateX(-100%);
-    box-shadow: 4px 0 12px oklch(0 0 0 / 0.1);
+    box-shadow: var(--shadow-modal, 0 20px 25px -5px rgba(11, 28, 48, 0.15));
   }
 
   .sidebarOpen {

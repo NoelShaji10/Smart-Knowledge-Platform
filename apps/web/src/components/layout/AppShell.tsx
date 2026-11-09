@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useRef, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { ToastProvider } from '@/components/ui';
+import { ToastProvider, useToast } from '@/components/ui';
+import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { DocumentNavigationProvider } from '@/contexts/DocumentNavigationContext';
 import { Topbar } from './Topbar';
@@ -11,6 +12,23 @@ import styles from './AppShell.module.css';
 
 export interface AppShellProps {
   children: ReactNode;
+}
+
+function RegistrationNoticeListener() {
+  const { registrationNotice, clearRegistrationNotice } = useAuth();
+  const { showToast } = useToast();
+
+  useEffect(() => {
+    if (registrationNotice) {
+      showToast(
+        registrationNotice.message,
+        registrationNotice.sent ? 'info' : 'error',
+      );
+      clearRegistrationNotice?.();
+    }
+  }, [registrationNotice, clearRegistrationNotice, showToast]);
+
+  return null;
 }
 
 export function AppShell({ children }: AppShellProps) {
@@ -57,6 +75,7 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <ToastProvider>
+      <RegistrationNoticeListener />
       <DocumentNavigationProvider workspaceId={currentWorkspaceId}>
         <div className={styles.shell}>
           <Topbar

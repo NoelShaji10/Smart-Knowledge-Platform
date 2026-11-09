@@ -822,8 +822,10 @@ describe('Task 3 Remediation: Manage Members & Workspace Invitations UI Tests', 
 
       const text = container.textContent || '';
       expect(text).toContain('Delivery Failed');
-      expect(text).toContain('ETIMEDOUT');
-      expect(text).toContain('550 Mailbox not found');
+      expect(text).toContain('Mail server could not be reached');
+      expect(text).toContain('Recipient address was rejected');
+      expect(text).not.toContain('ETIMEDOUT');
+      expect(text).not.toContain('550 Mailbox not found');
     });
 
     it('5. not_requested displays Shareable Link badge', async () => {
@@ -871,7 +873,7 @@ describe('Task 3 Remediation: Manage Members & Workspace Invitations UI Tests', 
 
       const text = container.textContent || '';
       expect(text).toContain('Delivery Failed');
-      expect(text).toContain('Delivery attempt failed');
+      expect(text).toContain('Delivery could not be completed. Please try again later.');
     });
 
     it('7. retry controls appear as "Retry Email" for failed delivery and open retry confirmation', async () => {

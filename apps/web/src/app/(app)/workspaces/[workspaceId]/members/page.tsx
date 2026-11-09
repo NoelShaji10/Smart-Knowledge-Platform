@@ -16,6 +16,7 @@ import { Avatar, Badge, Button, Skeleton, useToast } from '@/components/ui';
 import { ConfirmationModal } from '@/components/members/ConfirmationModal';
 import { InviteMemberModal } from '@/components/members/InviteMemberModal';
 import { ResendResultModal } from '@/components/members/ResendResultModal';
+import { formatDeliveryError } from '@/components/members/invitationUtils';
 import styles from './page.module.css';
 
 function formatDate(isoString?: string | null): string {
@@ -50,7 +51,7 @@ function renderDeliveryStatusBadge(inv: WorkspaceInvitation) {
       return <Badge variant="info">Sending...</Badge>;
     case 'failed':
     case 'permanently_failed': {
-      const reason = inv.email_failure_reason || 'Delivery attempt failed';
+      const reason = formatDeliveryError(inv.email_failure_reason);
       return (
         <Badge variant="danger" title={reason}>
           Delivery Failed
@@ -450,6 +451,7 @@ export default function WorkspaceMembersPage({
               variant="primary"
               onClick={() => setIsInviteModalOpen(true)}
               aria-label="Invite new member"
+              className={styles.inviteBtn}
             >
               + Invite Member
             </Button>
@@ -522,7 +524,9 @@ export default function WorkspaceMembersPage({
                 return (
                   <div key={member.id} className={styles.cardItem}>
                     <div className={styles.memberMeta}>
-                      <Avatar name={member.display_name || member.email} size="md" />
+                      <div className={styles.avatarWrapper}>
+                        <Avatar name={member.display_name || member.email} size="lg" src={member.avatar_url || undefined} />
+                      </div>
                       <div className={styles.memberInfo}>
                         <div className={styles.nameRow}>
                           <span className={styles.memberName}>
@@ -532,31 +536,42 @@ export default function WorkspaceMembersPage({
                           <Badge variant={member.role}>{member.role}</Badge>
                         </div>
                         <span className={styles.memberEmail}>{member.email}</span>
-                        <span className={styles.joinedDate}>
-                          Joined {formatDate(member.created_at)}
-                        </span>
+                        <div className={styles.joinedDate}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                            <line x1="16" y1="2" x2="16" y2="6" />
+                            <line x1="8" y1="2" x2="8" y2="6" />
+                            <line x1="3" y1="10" x2="21" y2="10" />
+                          </svg>
+                          <span>Joined {formatDate(member.created_at)}</span>
+                        </div>
                       </div>
                     </div>
 
                     <div className={styles.memberActions}>
                       {canChangeThisMember ? (
-                        <select
-                          className={styles.roleSelect}
-                          value={member.role}
-                          aria-label={`Change role for ${member.display_name || member.email}`}
-                          onChange={(e) => {
-                            const newRole = e.target.value as 'admin' | 'editor' | 'viewer';
-                            if (newRole !== member.role) {
-                              setRoleChangeTarget({ member, newRole });
-                            }
-                          }}
-                        >
-                          {isOwner && <option value="admin">Admin</option>}
-                          <option value="editor">Editor</option>
-                          <option value="viewer">Viewer</option>
-                        </select>
+                        <div className={styles.selectWrapper}>
+                          <select
+                            className={styles.roleSelect}
+                            value={member.role}
+                            aria-label={`Change role for ${member.display_name || member.email}`}
+                            onChange={(e) => {
+                              const newRole = e.target.value as 'admin' | 'editor' | 'viewer';
+                              if (newRole !== member.role) {
+                                setRoleChangeTarget({ member, newRole });
+                              }
+                            }}
+                          >
+                            {isOwner && <option value="admin">Admin</option>}
+                            <option value="editor">Editor</option>
+                            <option value="viewer">Viewer</option>
+                          </select>
+                          <svg className={styles.selectChevron} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                            <polyline points="6 9 12 15 18 9" />
+                          </svg>
+                        </div>
                       ) : (
-                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-tertiary)' }}>
+                        <span className={styles.ownerBadge}>
                           {member.role === 'owner' ? 'Workspace Owner' : ''}
                         </span>
                       )}
@@ -567,7 +582,7 @@ export default function WorkspaceMembersPage({
                           size="sm"
                           onClick={() => setRemoveTarget(member)}
                           aria-label={`Remove ${member.display_name || member.email}`}
-                          style={{ color: 'var(--danger)' }}
+                          className={styles.removeBtn}
                         >
                           {isSelf ? 'Leave Workspace' : 'Remove'}
                         </Button>
@@ -658,12 +673,12 @@ export default function WorkspaceMembersPage({
                     <div className={styles.invitationMeta}>
                       <div className={styles.invitationIconBox} aria-hidden="true">
                         {isEmailBound ? (
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
                             <polyline points="22,6 12,13 2,6" />
                           </svg>
                         ) : (
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
                             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                           </svg>
@@ -680,7 +695,9 @@ export default function WorkspaceMembersPage({
                           {renderDeliveryStatusBadge(inv)}
                         </div>
                         <div className={styles.invitationDates}>
-                          <span>{formatExpiry(inv.expires_at, inv.status)}</span>
+                          <span className={isPending ? styles.expiryActive : undefined}>
+                            {formatExpiry(inv.expires_at, inv.status)}
+                          </span>
                           <span>•</span>
                           <span>Created {formatDate(inv.created_at)}</span>
                           {inv.email_sent_at && (
@@ -695,9 +712,9 @@ export default function WorkspaceMembersPage({
                               <span>•</span>
                               <span
                                 className={styles.deliveryErrorText}
-                                title={inv.email_failure_reason || 'Delivery attempt failed'}
+                                title={formatDeliveryError(inv.email_failure_reason)}
                               >
-                                Failed: {inv.email_failure_reason || 'Delivery attempt failed'}
+                                Failed: {formatDeliveryError(inv.email_failure_reason)}
                               </span>
                             </>
                           )}
@@ -706,13 +723,17 @@ export default function WorkspaceMembersPage({
                     </div>
 
                     <div className={styles.invitationActions}>
+                      {inv.status === 'accepted' && (
+                        <span className={styles.archivedText}>Link accepted</span>
+                      )}
+
                       {canRevoke && (
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => setRevokeTarget(inv)}
                           aria-label={`Revoke invitation for ${inv.invitee_email || 'shareable link'}`}
-                          style={{ color: 'var(--danger)' }}
+                          className={styles.revokeBtn}
                         >
                           Revoke
                         </Button>
@@ -724,6 +745,7 @@ export default function WorkspaceMembersPage({
                           size="sm"
                           onClick={() => setResendTarget(inv)}
                           disabled={resendLoading}
+                          className={styles.resendBtn}
                           aria-label={`${
                             inv.email_delivery_status === 'failed' ||
                             inv.email_delivery_status === 'permanently_failed'

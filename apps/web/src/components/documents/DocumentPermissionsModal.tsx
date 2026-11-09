@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, ApiError, DocumentPermissionOverride } from '@/lib/api';
-import { Button, Input, Badge, Skeleton, useToast } from '@/components/ui';
+import { Button, Input, Badge, Skeleton, useToast, Avatar } from '@/components/ui';
 import styles from './DocumentPermissionsModal.module.css';
 
 export interface DocumentPermissionsModalProps {
@@ -174,9 +174,14 @@ export function DocumentPermissionsModal({
         aria-labelledby="permissions-modal-title"
       >
         <div className={styles.header}>
-          <h2 id="permissions-modal-title" className={styles.title}>
-            Document Permissions
-          </h2>
+          <div className={styles.headerContent}>
+            <h2 id="permissions-modal-title" className={styles.title}>
+              Document Permissions
+            </h2>
+            <p className={styles.subtitle}>
+              Manage member access overrides for this document.
+            </p>
+          </div>
           <button
             type="button"
             className={styles.closeBtn}
@@ -188,59 +193,99 @@ export function DocumentPermissionsModal({
         </div>
 
         <form onSubmit={handleGrantPermission} className={styles.formSection}>
-          <span className={styles.formTitle}>Add Permission Override</span>
-          <div className={styles.formRow}>
-            {members.length > 0 ? (
-              <select
-                className={styles.roleSelect}
-                value={targetUserId}
-                onChange={(e) => setTargetUserId(e.target.value)}
-                aria-label="Select Target Member"
-                style={{ flex: 1 }}
-              >
-                <option value="">Select workspace member...</option>
-                {members.map((m) => {
-                  const roleLabel = m.role ? m.role.charAt(0).toUpperCase() + m.role.slice(1) : '';
-                  return (
-                    <option key={m.id} value={m.id}>
-                      {m.display_name || m.email} ({m.email}) — {roleLabel}
-                    </option>
-                  );
-                })}
-              </select>
-            ) : (
-              <div style={{ flex: 1 }}>
+          <div className={styles.formHeader}>
+            <span className={styles.formTitle}>Add Permission Override</span>
+            <span className={styles.formSubtitle}>Grant or restrict document access for a workspace member</span>
+          </div>
+
+          <div className={styles.formFields}>
+            <div className={styles.fieldGroup}>
+              <label className={styles.fieldLabel} htmlFor="member-select">
+                Workspace Member
+              </label>
+              {members.length > 0 ? (
+                <div className={styles.selectWrapper}>
+                  <select
+                    id="member-select"
+                    className={styles.selectInput}
+                    value={targetUserId}
+                    onChange={(e) => setTargetUserId(e.target.value)}
+                    aria-label="Select Target Member"
+                  >
+                    <option value="">Select workspace member...</option>
+                    {members.map((m) => {
+                      const roleLabel = m.role ? m.role.charAt(0).toUpperCase() + m.role.slice(1) : '';
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {m.display_name || m.email} ({m.email}) — {roleLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              ) : (
                 <Input
+                  id="member-select"
                   placeholder="Target User UUID"
                   value={targetUserId}
                   onChange={(e) => setTargetUserId(e.target.value)}
                   aria-label="Target User ID"
                 />
+              )}
+            </div>
+
+            <div className={styles.actionRow}>
+              <div className={styles.roleField}>
+                <label className={styles.fieldLabel} htmlFor="role-select">
+                  Document Role
+                </label>
+                <div className={styles.selectWrapper}>
+                  <select
+                    id="role-select"
+                    className={styles.selectInput}
+                    value={targetRole}
+                    onChange={(e) => setTargetRole(e.target.value as 'editor' | 'viewer' | 'none')}
+                    aria-label="Permission Role"
+                  >
+                    <option value="editor">Editor (Can edit)</option>
+                    <option value="viewer">Viewer (Read only)</option>
+                    <option value="none">Denied (No access)</option>
+                  </select>
+                </div>
               </div>
-            )}
-            <select
-              className={styles.roleSelect}
-              value={targetRole}
-              onChange={(e) => setTargetRole(e.target.value as 'editor' | 'viewer' | 'none')}
-              aria-label="Permission Role"
-            >
-              <option value="editor">Override: Editor</option>
-              <option value="viewer">Override: Viewer</option>
-              <option value="none">Override: Denied (No Access)</option>
-            </select>
-            <Button type="submit" variant="primary" loading={submitLoading}>
-              Grant
-            </Button>
+
+              <Button
+                type="submit"
+                variant="primary"
+                loading={submitLoading}
+                disabled={!targetUserId.trim() || submitLoading}
+                className={styles.grantBtn}
+              >
+                Grant Override
+              </Button>
+            </div>
           </div>
         </form>
 
         <div className={styles.overrideList}>
-          <span className={styles.listHeader}>Current Overrides</span>
+          <div className={styles.listHeaderRow}>
+            <span className={styles.listHeader}>
+              Current Overrides
+              {permissions.length > 0 && (
+                <span className={styles.countBadge}>{permissions.length}</span>
+              )}
+            </span>
+          </div>
 
           {loading ? (
-            <Skeleton height={60} />
+            <Skeleton height={72} />
           ) : permissions.length === 0 ? (
-            <div className={styles.emptyText}>No explicit document permission overrides. All members inherit their workspace role.</div>
+            <div className={styles.emptyCard}>
+              <span className={styles.emptyTitle}>No explicit permission overrides</span>
+              <span className={styles.emptySubtitle}>
+                All workspace members inherit their workspace role permissions on this document.
+              </span>
+            </div>
           ) : (
             permissions.map((perm) => {
               const wsMember = memberMap.get(perm.id);
@@ -249,45 +294,43 @@ export function DocumentPermissionsModal({
 
               return (
                 <div key={perm.id} className={styles.overrideItem}>
-                  <div className={styles.userInfo}>
-                    <div className={styles.userName}>{perm.display_name || perm.id}</div>
-                    <div className={styles.userEmail}>{perm.email || perm.id}</div>
-                    <div style={{ display: 'flex', gap: 'var(--space-1)', marginTop: 4, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-secondary)' }}>
-                        Workspace: <Badge variant="default">{wsRole}</Badge>
-                      </span>
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-secondary)' }}>
-                        Effective: <Badge variant={perm.role === 'none' ? 'admin' : perm.role === 'editor' ? 'owner' : 'viewer'}>{effectiveLabel}</Badge>
-                      </span>
+                  <div className={styles.userCell}>
+                    <Avatar name={perm.display_name || perm.email || 'User'} size="sm" />
+                    <div className={styles.userInfo}>
+                      <div className={styles.userName}>{perm.display_name || perm.email || perm.id}</div>
+                      <div className={styles.userEmail}>{perm.email || perm.id}</div>
+                      <div className={styles.badgeRow}>
+                        <span className={styles.metaText}>
+                          Workspace: <Badge variant={wsRole as any}>{wsRole}</Badge>
+                        </span>
+                        <span className={styles.metaText}>
+                          Effective: <Badge variant={perm.role === 'none' ? 'admin' : perm.role === 'editor' ? 'editor' : 'viewer'}>{effectiveLabel}</Badge>
+                        </span>
+                      </div>
                     </div>
                   </div>
 
                   <div className={styles.actions}>
-                    {perm.role === 'none' ? (
-                      <Badge variant="admin">Denied</Badge>
-                    ) : perm.role === 'editor' ? (
-                      <Badge variant="owner">Editor</Badge>
-                    ) : (
-                      <Badge variant="viewer">Viewer</Badge>
-                    )}
-
-                    <select
-                      className={styles.roleSelect}
-                      value={perm.role}
-                      disabled={actionUserId === perm.id}
-                      onChange={(e) =>
-                        handleRoleChange(perm.id, e.target.value as 'editor' | 'viewer' | 'none')
-                      }
-                      aria-label={`Change role for ${perm.display_name}`}
-                    >
-                      <option value="editor">Editor</option>
-                      <option value="viewer">Viewer</option>
-                      <option value="none">Denied</option>
-                    </select>
+                    <div className={styles.compactSelectWrapper}>
+                      <select
+                        className={styles.compactSelect}
+                        value={perm.role}
+                        disabled={actionUserId === perm.id}
+                        onChange={(e) =>
+                          handleRoleChange(perm.id, e.target.value as 'editor' | 'viewer' | 'none')
+                        }
+                        aria-label={`Change role for ${perm.display_name}`}
+                      >
+                        <option value="editor">Editor</option>
+                        <option value="viewer">Viewer</option>
+                        <option value="none">Denied</option>
+                      </select>
+                    </div>
 
                     <Button
                       variant="ghost"
                       size="sm"
+                      className={styles.removeBtn}
                       disabled={actionUserId === perm.id}
                       onClick={() => handleRemovePermission(perm.id)}
                       title="Remove permission override"

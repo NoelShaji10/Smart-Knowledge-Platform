@@ -1,24 +1,28 @@
 .container {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1140px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-8);
+  padding: var(--space-6) var(--space-8) var(--space-12);
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
+  box-sizing: border-box;
 }
 
+/* Breadcrumb Navigation */
 .breadcrumb {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   color: var(--fg-tertiary);
-  margin-bottom: var(--space-2);
+  margin-bottom: calc(var(--space-2) * -1);
 }
 
 .breadcrumbLink {
   color: var(--fg-secondary);
+  text-decoration: none;
   transition: color 0.15s ease;
 }
 
@@ -37,11 +41,12 @@
   font-weight: 500;
 }
 
+/* Header Section */
 .headerSection {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--space-6);
   padding-bottom: var(--space-6);
   border-bottom: 1px solid var(--border);
 }
@@ -49,7 +54,8 @@
 .headerInfo {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-1.5);
+  min-width: 0;
 }
 
 .titleRow {
@@ -61,18 +67,20 @@
 
 .heading {
   font-family: var(--font-display);
-  font-size: var(--text-2xl);
+  font-size: 32px;
   font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
   color: var(--fg);
   margin: 0;
-  line-height: 1.2;
 }
 
 .description {
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   color: var(--fg-secondary);
   line-height: 1.5;
-  max-width: 600px;
+  max-width: 640px;
   margin: 0;
 }
 
@@ -83,32 +91,42 @@
   flex-shrink: 0;
 }
 
-.bannerError {
-  display: flex;
+.inviteBtn {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  background-color: var(--danger-subtle);
-  border: 1px solid oklch(0.55 0.2 25 / 0.3);
-  border-radius: 8px;
-  color: var(--danger);
+  gap: var(--space-1.5);
+  font-weight: 500;
   font-size: var(--text-sm);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
+/* Error and Rate Limit Banners */
+.bannerError,
 .bannerRateLimit {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: var(--space-4);
-  background-color: var(--warning-subtle);
-  border: 1px solid oklch(0.7 0.16 75 / 0.3);
-  border-radius: 8px;
-  color: var(--fg);
+  padding: var(--space-3.5) var(--space-4);
+  border-radius: var(--radius-lg);
   font-size: var(--text-sm);
+  line-height: 1.4;
+  animation: fadeIn 0.15s ease-out;
 }
 
+.bannerError {
+  background-color: var(--danger-subtle);
+  border: 1px solid oklch(0.55 0.2 25 / 0.25);
+  color: var(--danger);
+}
+
+.bannerRateLimit {
+  background-color: var(--warning-subtle);
+  border: 1px solid oklch(0.7 0.16 75 / 0.3);
+  color: var(--fg);
+}
+
+/* Main Content Grid */
 .contentGrid {
   display: flex;
   flex-direction: column;
@@ -118,60 +136,69 @@
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3.5);
 }
 
 .sectionHeader {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: 2px;
 }
 
 .sectionTitleGroup {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-2.5);
 }
 
 .sectionTitle {
+  font-family: var(--font-body);
   font-size: var(--text-lg);
   font-weight: 600;
   color: var(--fg);
   margin: 0;
+  letter-spacing: -0.01em;
 }
 
 .countBadge {
-  font-size: var(--text-xs);
+  font-family: var(--font-body);
+  font-size: 11px;
   font-weight: 600;
-  padding: 1px var(--space-2);
+  padding: 1px 8px;
   background-color: var(--surface-alt);
   color: var(--fg-secondary);
-  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  line-height: 1.4;
 }
 
 .sectionDesc {
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
   margin: 0;
 }
 
-/* Card table container */
+/* Card Container / List */
 .cardList {
   display: flex;
   flex-direction: column;
   background-color: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
   overflow: hidden;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Member Card Item                                                          */
+/* ------------------------------------------------------------------------- */
 .cardItem {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   gap: var(--space-4);
   transition: background-color 0.15s ease;
 }
@@ -187,15 +214,21 @@
 .memberMeta {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-3.5);
   min-width: 0;
   flex: 1;
+}
+
+.avatarWrapper {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 .memberInfo {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -207,7 +240,8 @@
 }
 
 .memberName {
-  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  font-size: 15px;
   font-weight: 600;
   color: var(--fg);
   white-space: nowrap;
@@ -216,16 +250,21 @@
 }
 
 .youTag {
+  font-family: var(--font-body);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  background-color: var(--accent-subtle);
-  color: var(--accent);
+  letter-spacing: 0.04em;
+  background-color: var(--surface-alt);
+  color: var(--fg-secondary);
+  border: 1px solid var(--border);
   padding: 1px 6px;
   border-radius: 4px;
+  line-height: 1.3;
 }
 
 .memberEmail {
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   color: var(--fg-secondary);
   white-space: nowrap;
@@ -234,7 +273,16 @@
 }
 
 .joinedDate {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
   font-size: var(--text-xs);
+  color: var(--fg-tertiary);
+}
+
+.joinedDate svg {
+  flex-shrink: 0;
   color: var(--fg-tertiary);
 }
 
@@ -245,20 +293,32 @@
   flex-shrink: 0;
 }
 
+.selectWrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 .roleSelect {
-  padding: var(--space-1) var(--space-2);
+  padding: 6px 30px 6px 10px;
+  font-family: var(--font-body);
   font-size: var(--text-xs);
-  background-color: var(--bg);
+  font-weight: 500;
+  background-color: var(--surface-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg);
   cursor: pointer;
   outline: none;
-  transition: border-color 0.15s ease;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: all 0.15s ease;
 }
 
 .roleSelect:focus {
   border-color: var(--accent);
+  background-color: var(--surface);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 .roleSelect:disabled {
@@ -266,13 +326,43 @@
   cursor: not-allowed;
 }
 
-/* Invitations styling */
+.selectChevron {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
+  color: var(--fg-tertiary);
+}
+
+.ownerBadge {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--fg-tertiary);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background-color: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+.removeBtn {
+  font-size: var(--text-xs);
+  color: var(--danger) !important;
+  transition: all 0.15s ease;
+}
+
+.removeBtn:hover {
+  background-color: var(--danger-subtle) !important;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Invitation Card Item                                                      */
+/* ------------------------------------------------------------------------- */
 .invitationItem {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   gap: var(--space-4);
   transition: background-color 0.15s ease;
 }
@@ -288,16 +378,17 @@
 .invitationMeta {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-3.5);
   min-width: 0;
   flex: 1;
 }
 
 .invitationIconBox {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   background-color: var(--surface-alt);
+  border: 1px solid var(--border);
   color: var(--fg-secondary);
   display: flex;
   align-items: center;
@@ -308,7 +399,7 @@
 .invitationInfo {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -320,26 +411,29 @@
 }
 
 .invitationTarget {
-  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  font-size: 14px;
   font-weight: 600;
   color: var(--fg);
-}
-
-.shareableBadge {
-  font-size: 10px;
-  font-weight: 600;
-  background-color: var(--surface-alt);
-  color: var(--fg-secondary);
-  padding: 1px 6px;
-  border-radius: 4px;
 }
 
 .invitationDates {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
+  flex-wrap: wrap;
+}
+
+.expiryActive {
+  color: #b45309;
+  font-weight: 500;
+}
+
+:global(.dark) .expiryActive {
+  color: #fbbf24;
 }
 
 .invitationActions {
@@ -349,32 +443,41 @@
   flex-shrink: 0;
 }
 
-.deliveryStatusWrapper {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.deliveryBadge {
-  font-size: 11px;
-}
-
-.deliveryMetaText {
+.archivedText {
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   color: var(--fg-tertiary);
+  font-style: italic;
+  padding: 0 var(--space-2);
+}
+
+.revokeBtn {
+  font-size: var(--text-xs);
+  color: var(--danger) !important;
+  transition: all 0.15s ease;
+}
+
+.revokeBtn:hover {
+  background-color: var(--danger-subtle) !important;
+}
+
+.resendBtn {
+  font-size: var(--text-xs);
 }
 
 .deliveryErrorText {
   font-size: var(--text-xs);
   color: var(--danger);
-  max-width: 260px;
+  max-width: 280px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: help;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Empty & Restricted States                                                 */
+/* ------------------------------------------------------------------------- */
 .emptyState {
   padding: var(--space-8);
   text-align: center;
@@ -392,14 +495,16 @@
 }
 
 .emptyTitle {
+  font-family: var(--font-body);
   font-weight: 600;
   color: var(--fg-secondary);
   font-size: var(--text-base);
 }
 
 .emptyDesc {
-  max-width: 380px;
-  line-height: 1.4;
+  max-width: 400px;
+  line-height: 1.45;
+  color: var(--fg-tertiary);
 }
 
 .restrictedCard {
@@ -411,8 +516,7 @@
   gap: var(--space-2);
   color: var(--fg-secondary);
   background-color: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
 }
 
 .restrictedIcon {
@@ -421,6 +525,7 @@
 }
 
 .restrictedTitle {
+  font-family: var(--font-body);
   font-weight: 600;
   color: var(--fg);
   font-size: var(--text-base);
@@ -433,14 +538,23 @@
   color: var(--fg-secondary);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Responsive Media Queries                                                  */
+/* ------------------------------------------------------------------------- */
 @media (max-width: 768px) {
   .container {
     padding: var(--space-4);
+    gap: var(--space-6);
   }
 
   .headerSection {
     flex-direction: column;
     align-items: stretch;
+    gap: var(--space-4);
+  }
+
+  .heading {
+    font-size: 26px;
   }
 
   .headerActions {
@@ -451,12 +565,37 @@
   .invitationItem {
     flex-direction: column;
     align-items: flex-start;
-    gap: var(--space-3);
+    gap: var(--space-3.5);
+    padding: var(--space-4);
+  }
+
+  .memberMeta,
+  .invitationMeta {
+    width: 100%;
   }
 
   .memberActions,
   .invitationActions {
     width: 100%;
     justify-content: flex-end;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .selectWrapper {
+    flex: 1;
+  }
+
+  .roleSelect {
+    width: 100%;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }

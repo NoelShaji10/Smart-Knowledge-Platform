@@ -21,13 +21,23 @@ describe('MEDIUM 6: Account Enumeration Hardening & Argon2id Verification', () =
         password,
         displayName: 'Existing Account User',
       });
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
   it('ensures duplicate email registration performs Argon2id hashing and rejects generically', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const res = await request(app)
       .post('/api/v1/auth/register')
@@ -41,7 +51,12 @@ describe('MEDIUM 6: Account Enumeration Hardening & Argon2id Verification', () =
   });
 
   it('ensures nonexistent user login and wrong password login return identical authentication errors', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     // 1. Wrong password on existing user
     const res1 = await request(app)

@@ -11,6 +11,12 @@ jobs:
     name: Build, Lint & Test
     runs-on: ubuntu-latest
 
+    env:
+      CI: true
+      DATABASE_URL: postgres://knowledge_app:knowledge_app@localhost:5433/knowledge
+      MIGRATION_DATABASE_URL: postgres://app:app@localhost:5433/knowledge
+      REDIS_URL: redis://localhost:6379
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,22 +29,31 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Spin up Docker Compose infrastructure
+        run: docker compose up -d --wait postgres redis minio
+
+      - name: Run database migrations
+        run: pnpm db:migrate
+
+      - name: Verify runtime database role availability
+        run: pnpm --filter @knowledge/database exec node -e "if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); } const { Pool } = require('pg'); const pool = new Pool({ connectionString: process.env.DATABASE_URL }); pool.query('SELECT current_user, session_user;').then(r => { console.log('Connected as runtime role:', r.rows[0].current_user); pool.end(); }).catch(e => { console.error('Runtime role verification failed:', e); process.exit(1); });"
+
       - name: Typecheck monorepo
         run: pnpm typecheck
 
-      - name: Run unit tests
+      - name: Run unit and integration tests
         run: pnpm test
 
       - name: Run security invariant tests
         run: pnpm test:security
 
-      - name: Spin up Docker Compose infrastructure
+      - name: Spin up remaining infrastructure
         run: docker compose up -d
 
       - name: Run dev setup script

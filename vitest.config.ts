@@ -20,6 +20,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    fileParallelism: false,
     env: {
       EMAIL_PROVIDER: 'mock',
     },

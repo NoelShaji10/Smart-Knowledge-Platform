@@ -38,13 +38,23 @@ describe('Security Invariant 2: Complete Workspace Isolation', () => {
 
       userA_token = (await loginUser(db, { email: userA.email, password: 'Password123!' })).accessToken;
       userB_token = (await loginUser(db, { email: userB.email, password: 'Password123!' })).accessToken;
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
   it('prevents user in Workspace A from accessing resources in Workspace B via API', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const res = await request(app)
       .get(`/api/v1/workspaces/${workspaceB_id}`)
@@ -54,7 +64,12 @@ describe('Security Invariant 2: Complete Workspace Isolation', () => {
   });
 
   it('enforces PostgreSQL RLS preventing direct DB access across workspaces', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     // User A scoped DB context attempting to select workspaces
     const scopedDbA = createScopedDb(userA_id);
@@ -71,7 +86,12 @@ describe('Security Invariant 2: Complete Workspace Isolation', () => {
   });
 
   it('enforces PostgreSQL RLS preventing direct DB access to documents across workspaces', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     // Create document in Workspace B as User B
     const scopedDbB = createScopedDb(userB_id);

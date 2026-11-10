@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import { createApiApp } from '../../apps/api-server/src/app';
-import { runMigrations, getSystemDb } from '@knowledge/database';
+import { runMigrations, getSystemDb, withSystemContext } from '@knowledge/database';
 import { registerUser, loginUser } from '@knowledge/auth';
 import { createWorkspace } from '../../apps/api-server/src/lib/workspace-service';
 import { verifyAndConsumeTicket } from '../../apps/collab-server/src/ticket-verifier';
@@ -30,18 +30,25 @@ describe('Security Invariant 3: WebSocket Auth & Ticket Authorization', () => {
       documentId = crypto.randomUUID();
 
       // Insert controlled test fixture into documents table
-      await db.insertInto('documents').values({
-        id: documentId,
-        workspace_id: workspaceId,
-        title: 'WS Test Document',
-        content_text: 'Test content',
-        created_by: owner.id,
-      }).execute();
+      await withSystemContext(async (sysDb) => {
+        await sysDb.insertInto('documents').values({
+          id: documentId,
+          workspace_id: workspaceId,
+          title: 'WS Test Document',
+          content_text: 'Test content',
+          created_by: owner.id,
+        }).execute();
+      });
 
       ownerToken = (await loginUser(db, { email: owner.email, password: 'Password123!' })).accessToken;
       nonMemberToken = (await loginUser(db, { email: nonMember.email, password: 'Password123!' })).accessToken;
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
@@ -51,7 +58,12 @@ describe('Security Invariant 3: WebSocket Auth & Ticket Authorization', () => {
   });
 
   it('issues ticket for authorized workspace member and document', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const res = await request(app)
       .post('/api/v1/ws/ticket')
@@ -64,7 +76,12 @@ describe('Security Invariant 3: WebSocket Auth & Ticket Authorization', () => {
   });
 
   it('rejects ticket issuance for non-member of workspace', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const res = await request(app)
       .post('/api/v1/ws/ticket')

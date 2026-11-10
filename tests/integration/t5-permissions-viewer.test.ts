@@ -410,7 +410,9 @@ describe('Phase 5 — T5: Reliable Permission & Viewer Experience Integration Su
       .send({ workspaceId, documentId: activeDocId });
 
     expect(resTicket.status).toBe(403);
-    expect(resTicket.body.error).toContain('Explicit document access denied');
+    expect(resTicket.body.ticket).toBeUndefined();
+    // Non-disclosing RLS policy conceals the document row when role='none'
+    expect(resTicket.body.error).toBe('Document not found');
   });
 
   // Scenario L: Permission Restoration (override removed)

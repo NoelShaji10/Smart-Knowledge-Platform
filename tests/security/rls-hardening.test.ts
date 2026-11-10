@@ -36,13 +36,23 @@ describe('Security CRITICAL 1: PostgreSQL FORCE RLS & Tenant Isolation', () => {
 
       workspaceA_id = wsA.id;
       workspaceB_id = wsB.id;
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
   it('user A cannot read user B user row through req.db (ScopedDb)', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const scopedDbA = createScopedDb(userA_id);
     const usersFound = await scopedDbA.execute(async (db) => {
@@ -53,7 +63,12 @@ describe('Security CRITICAL 1: PostgreSQL FORCE RLS & Tenant Isolation', () => {
   });
 
   it('user A cannot read user B workspace through req.db (ScopedDb)', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const scopedDbA = createScopedDb(userA_id);
     const workspacesFound = await scopedDbA.execute(async (db) => {
@@ -64,7 +79,12 @@ describe('Security CRITICAL 1: PostgreSQL FORCE RLS & Tenant Isolation', () => {
   });
 
   it('user A cannot mutate user B workspace through req.db (ScopedDb)', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const scopedDbA = createScopedDb(userA_id);
     const updatedCount = await scopedDbA.execute(async (db) => {
@@ -81,7 +101,12 @@ describe('Security CRITICAL 1: PostgreSQL FORCE RLS & Tenant Isolation', () => {
   });
 
   it('proves FORCE RLS applies even under table owner connection when app.current_user_id is set', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     // getSystemDb() operates with the primary connection pool
     const scopedDbA = createScopedDb(userA_id);

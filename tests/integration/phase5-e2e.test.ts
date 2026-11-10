@@ -92,15 +92,6 @@ describe('Phase 5 Task 6: End-to-End Email Delivery & Invitation Verification Su
     vi.restoreAllMocks();
     vi.spyOn(emailModule, 'getEmailTransport').mockReturnValue(mockTransport);
     mockTransport.clearSentMessages();
-    const redis = getRedisClient();
-    try {
-      const keys = await redis.keys('rate:*');
-      if (keys.length > 0) {
-        await redis.del(...keys);
-      }
-    } catch {
-      // Ignore redis clear error
-    }
   });
 
   // =========================================================================
@@ -886,17 +877,29 @@ describe('Phase 5 Task 6: End-to-End Email Delivery & Invitation Verification Su
       const email = `ratelimit_req_${Date.now()}@example.com`;
       const responses: any[] = [];
 
-      // Send 7 requests (limit is 5)
-      for (let i = 0; i < 7; i++) {
-        const res = await request(app)
-          .post('/api/v1/auth/verify-email/request')
-          .send({ email });
-        responses.push(res);
-      }
+      try {
+        // Send 7 requests (limit is 5)
+        for (let i = 0; i < 7; i++) {
+          const res = await request(app)
+            .post('/api/v1/auth/verify-email/request')
+            .send({ email });
+          responses.push(res);
+        }
 
-      const rateLimited = responses.filter((r) => r.status === 429);
-      expect(rateLimited.length).toBeGreaterThanOrEqual(1);
-      expect(rateLimited[0].body.error).toContain('Too many requests');
+        const rateLimited = responses.filter((r) => r.status === 429);
+        expect(rateLimited.length).toBeGreaterThanOrEqual(1);
+        expect(rateLimited[0].body.error).toContain('Too many requests');
+      } finally {
+        try {
+          const redis = getRedisClient();
+          const verifyReqKeys = await redis.keys('rate:verify_email*');
+          for (const k of verifyReqKeys) {
+            await redis.del(k);
+          }
+        } catch {
+          // Ignore redis clear error
+        }
+      }
     });
   });
 

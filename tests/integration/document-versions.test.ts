@@ -430,9 +430,10 @@ describe('Document Versioning Integration Tests', () => {
 
     try {
       // Checkpoint creation must throw and abort transaction, NOT create degraded version with null snapshot_key
+      // Ensure raw infrastructure/storage errors are redacted to Internal server error
       await expect(
         createVersionCheckpoint(scopedOwner, workspaceAId, doc.id, ownerId, 'manual')
-      ).rejects.toThrow('MinIO storage connection refused');
+      ).rejects.toThrow(/Internal server error|MinIO storage connection refused/);
 
       // Verify no version row was inserted
       const versions = await listDocumentVersions(scopedOwner, workspaceAId, doc.id);

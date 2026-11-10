@@ -36,13 +36,23 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
 
       workspaceA_id = wsA.id;
       workspaceB_id = wsB.id;
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
   it('verifies that the actual runtime DB connection uses knowledge_app role', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const pool = getPgPool();
     const res = await pool.query('SELECT current_user, session_user');
@@ -50,7 +60,12 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
   });
 
   it('verifies that runtime role knowledge_app has rolbypassrls = false in pg_roles', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const pool = getPgPool();
     const res = await pool.query("SELECT rolname, rolbypassrls, rolsuper FROM pg_roles WHERE rolname = current_user");
@@ -62,7 +77,12 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
   });
 
   it('verifies that runtime role knowledge_app does NOT own protected tables', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const pool = getPgPool();
     const res = await pool.query(`
@@ -82,7 +102,12 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
   });
 
   it('verifies that protected tables have FORCE ROW LEVEL SECURITY (relrowsecurity & relforcerowsecurity)', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const pool = getPgPool();
     const res = await pool.query(`
@@ -102,7 +127,12 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
   });
 
   it('verifies that user A cannot read or mutate user B rows under req.db runtime context', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const scopedDbA = createScopedDb(userA_id);
 
@@ -121,7 +151,12 @@ describe('Security Requirement 4: Real Runtime Database Role & RLS Verification'
   });
 
   it('verifies legitimate same-user/workspace operations work under req.db runtime context', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const scopedDbA = createScopedDb(userA_id);
 

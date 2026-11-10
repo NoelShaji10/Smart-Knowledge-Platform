@@ -11,13 +11,23 @@ describe('Security Test: NULL-workspace Audit Event RLS Isolation', () => {
     try {
       await runMigrations();
       isDbConnected = true;
-    } catch {
+    } catch (err) {
       isDbConnected = false;
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error(
+          `Database connection or setup failed in CI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   });
 
   it('verifies that workspace_id = NULL global auth audit events CANNOT be read via normal RLS user context', async () => {
-    if (!isDbConnected) return;
+    if (!isDbConnected) {
+      if (process.env.CI || process.env.REQUIRE_DB) {
+        throw new Error('Database is not connected in CI environment');
+      }
+      return;
+    }
 
     const systemDb = getSystemDb();
 

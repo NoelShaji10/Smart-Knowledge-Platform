@@ -42,7 +42,24 @@ jobs:
         run: pnpm db:migrate
 
       - name: Verify runtime database role availability
-        run: pnpm --filter @knowledge/database exec node -e "if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); } const { Pool } = require('pg'); const pool = new Pool({ connectionString: process.env.DATABASE_URL }); pool.query('SELECT current_user, session_user;').then(r => { console.log('Connected as runtime role:', r.rows[0].current_user); pool.end(); }).catch(e => { console.error('Runtime role verification failed:', e); process.exit(1); });"
+        run: |
+          pnpm --filter @knowledge/database exec node -e "
+            if (!process.env.DATABASE_URL) {
+              console.error('DATABASE_URL not set');
+              process.exit(1);
+            }
+            const { Pool } = require('pg');
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+            pool.query('SELECT current_user, session_user;')
+              .then(r => {
+                console.log('Connected as runtime role:', r.rows[0].current_user);
+                return pool.end();
+              })
+              .catch(e => {
+                console.error('Runtime role verification failed:', e);
+                return pool.end().catch(() => {}).then(() => process.exit(1));
+              });
+          "
 
       - name: Typecheck monorepo
         run: pnpm typecheck
